@@ -1,12 +1,12 @@
 { inputs, ... }:
 {
-flake.modules.nixos.inventree-0-11-0 = { config, lib, ... }:
+flake.modules.nixos.inventree = { config, lib, ... }:
 let
-  cfg = config.services.inventree0110;
+  cfg = config.services.inventree;
   inventree = {
     # Path *inside* the nspawn container that becomes INVENTREE_EXT_VOLUME.
     # This is where the postgres cluster, media, static files and secret key all live
-    # (upstream's 0.11.0 compose file maps ALL of it from a single bind-mounted volume).
+    # (the selected version's compose file maps ALL of it from a single bind-mounted volume).
     dataDir = "/var/lib/inventree/data";
     composeDir = "/etc/inventree-docker";
 
@@ -19,7 +19,7 @@ let
     hostAddress = cfg.hostAddress;
     appAddress = cfg.appAddress;
 
-    inventreeTag = "0.11.0"; # pin deliberately - do NOT let this drift to "stable"
+    inventreeTag = cfg.version; # image tag == chosen version (see services.inventree.version)
     webPort = 1337; # matches upstream's INVENTREE_WEB_PORT default
 
     dbName = "inventree";
@@ -28,159 +28,30 @@ let
     secretsDir = "../../machine/bingen2/secrets";
   };
 
-  # Verbatim from:
-  # https://github.com/inventree/InvenTree/blob/0.11.0/docker/production/docker-compose.yml
-  # When you move to the next rung, replace this whole string with that tag's file rather
-  # than hand-editing it - env var names and topology both shift across versions.
-  dockerComposeYml = ''
-    version: "3.8"
+  # ---------------------------------------------------------------------------
+  # Version registry - auto-discovered from the per-version subdirectories.
+  # ---------------------------------------------------------------------------
+  # Each lib/inventree/<tag>/ directory is one supported InvenTree release. It
+  # supplies its own default.nix - { tag; dockerComposeYml; nginxProdConf;
+  # extraEnv ? ""; } - alongside that tag's verbatim upstream
+  # docker-compose.yml and nginx.prod.conf. To add a rung, drop in a new
+  # <tag>/ directory; nothing in this file changes.
+  #
+  # Only the pre-0.14 "nginx reverse proxy" generation fits this shape. 0.14
+  # moved the compose file to docker/docker-compose.yml and swapped the bundled
+  # nginx proxy for Caddy, which would need a second, incompatible topology
+  # (different proxy image, different config file, no nginx.prod.conf).
+  versions = lib.mapAttrs
+    (name: _: import (./. + "/${name}"))
+    (lib.filterAttrs (_: t: t == "directory") (builtins.readDir ./.));
 
-    # Docker compose recipe for a production-ready InvenTree setup, with the following containers:
-    # - PostgreSQL as the database backend
-    # - gunicorn as the InvenTree web server
-    # - django-q as the InvenTree background worker process
-    # - nginx as a reverse proxy
-    # - redis as the cache manager (optional, disabled by default)
-
-    services:
-        inventree-db:
-            container_name: inventree-db
-            image: postgres:13
-            expose:
-                - ''${INVENTREE_DB_PORT:-5432}/tcp
-            environment:
-                - PGDATA=/var/lib/postgresql/data/pgdb
-                - POSTGRES_USER=''${INVENTREE_DB_USER:?You must provide the 'INVENTREE_DB_USER' variable in the .env file}
-                - POSTGRES_PASSWORD=''${INVENTREE_DB_PASSWORD:?You must provide the 'INVENTREE_DB_PASSWORD' variable in the .env file}
-                - POSTGRES_DB=''${INVENTREE_DB_NAME:?You must provide the 'INVENTREE_DB_NAME' variable in the .env file}
-            volumes:
-                - inventree_data:/var/lib/postgresql/data/
-            restart: unless-stopped
-
-        inventree-cache:
-            container_name: inventree-cache
-            image: redis:7.0
-            depends_on:
-                - inventree-db
-            profiles:
-                - redis
-            env_file:
-                - .env
-            expose:
-                - ''${INVENTREE_CACHE_PORT:-6379}
-            restart: always
-
-        inventree-server:
-            container_name: inventree-server
-            image: inventree/inventree:''${INVENTREE_TAG:-stable}
-            expose:
-                - 8000
-            depends_on:
-                - inventree-db
-            env_file:
-                - .env
-            volumes:
-                - inventree_data:/home/inventree/data
-            restart: unless-stopped
-
-        inventree-worker:
-            container_name: inventree-worker
-            image: inventree/inventree:''${INVENTREE_TAG:-stable}
-            command: invoke worker
-            depends_on:
-                - inventree-server
-            env_file:
-                - .env
-            volumes:
-                - inventree_data:/home/inventree/data
-            restart: unless-stopped
-
-        inventree-proxy:
-            container_name: inventree-proxy
-            image: nginx:stable
-            depends_on:
-                - inventree-server
-            env_file:
-                - .env
-            ports:
-                - ''${INVENTREE_WEB_PORT:-1337}:80
-            volumes:
-                - ./nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
-                - inventree_data:/var/www
-            restart: unless-stopped
-
-    volumes:
-        inventree_data:
-            driver: local
-            driver_opts:
-                type: none
-                o: bind
-                device: ''${INVENTREE_EXT_VOLUME:?You must specify the 'INVENTREE_EXT_VOLUME' variable in the .env file!}
-  '';
-
-  # Verbatim from:
-  # https://github.com/inventree/InvenTree/blob/0.11.0/docker/production/nginx.prod.conf
-  nginxProdConf = ''
-    server {
-
-        listen 80;
-
-        real_ip_header proxy_protocol;
-
-        location / {
-
-            proxy_set_header      Host              $http_host;
-            proxy_set_header      X-Forwarded-By    $server_addr:$server_port;
-            proxy_set_header      X-Forwarded-For   $remote_addr;
-            proxy_set_header      X-Forwarded-Proto $scheme;
-            proxy_set_header      X-Real-IP         $remote_addr;
-            proxy_set_header      CLIENT_IP         $remote_addr;
-
-            proxy_pass_request_headers on;
-
-            proxy_redirect off;
-
-            client_max_body_size 100M;
-
-            proxy_buffering off;
-            proxy_request_buffering off;
-
-            proxy_pass http://inventree-server:8000;
-        }
-
-        location /static/ {
-            alias /var/www/static/;
-            autoindex on;
-
-            expires 30d;
-            add_header Pragma public;
-            add_header Cache-Control "public";
-        }
-
-        location /media/ {
-            alias /var/www/media/;
-
-            auth_request /auth;
-
-            add_header Content-disposition "attachment";
-        }
-
-        location /auth {
-            internal;
-
-            proxy_pass http://inventree-server:8000/auth/;
-
-            proxy_pass_request_body off;
-            proxy_set_header Content-Length "";
-            proxy_set_header X-Original-URI $request_uri;
-        }
-
-    }
-  '';
+  selected = versions.${cfg.version};
+  dockerComposeYml = selected.dockerComposeYml;
+  nginxProdConf = selected.nginxProdConf;
 
   # Non-secret half of upstream's docker/production/.env. INVENTREE_DB_PASSWORD is appended
   # at service-start time from the agenix secret - never baked into the store.
-  envTemplate = pkgs: pkgs.writeText "inventree0110.env" (''
+  envTemplate = pkgs: pkgs.writeText "inventree.env" (''
     INVENTREE_EXT_VOLUME=${inventree.dataDir}
     INVENTREE_WEB_PORT=${toString inventree.webPort}
     INVENTREE_DEBUG=False
@@ -194,7 +65,7 @@ let
     INVENTREE_PLUGINS_ENABLED=False
     INVENTREE_TAG=${inventree.inventreeTag}
     COMPOSE_PROJECT_NAME=inventree-0-11-0
-  '' + lib.optionalString cfg.enableGoogleLogin ''
+  '' + (selected.extraEnv or "") + lib.optionalString cfg.enableGoogleLogin ''
     INVENTREE_SOCIAL_BACKENDS=allauth.socialaccount.providers.google
   '' + lib.optionalString (cfg.smtp.host != "") ''
     INVENTREE_EMAIL_HOST=${cfg.smtp.host}
@@ -206,7 +77,19 @@ let
   '');
 
 in {
-  options.services.inventree0110 = {
+  options.services.inventree = {
+    version = lib.mkOption {
+      type = lib.types.enum (lib.attrNames versions);
+      default = "0.13.6";
+      description = ''
+        Which InvenTree release to run. Only the pre-0.14 (nginx reverse
+        proxy) generation is offered. Raising this is an in-place upgrade
+        against the shared ${inventree.hostDataDir} database - schema
+        migrations run automatically on every start. Downgrades are not
+        supported. Every offered release is years past upstream security
+        support and must stay reachable only over Tailscale.
+      '';
+    };
     hostname = lib.mkOption {
       type = lib.types.str;
       default = "inventree0110";
@@ -351,7 +234,8 @@ in {
         hostName = cfg.hostname;
         # Matches your snipe-it module's posture: this relies on the private container
         # bridge not being reachable off-box. Never add a public vhost/ACME for this instance -
-        # 0.11.0 is years out of security patches and should only ever be reachable via Tailscale.
+        # every version this module offers is years out of security patches and should only
+        # ever be reachable via Tailscale.
         firewall.enable = false;
         useHostResolvConf = lib.mkForce false;
       };
@@ -390,7 +274,7 @@ in {
       environment.etc."inventree-docker/nginx.prod.conf".text = nginxProdConf;
 
       systemd.services.inventree-compose = {
-        description = "InvenTree 0.11.0 docker-compose stack";
+        description = "InvenTree ${cfg.version} docker-compose stack";
         after = [ "docker.service" "network-online.target" ];
         wants = [ "docker.service" "network-online.target" ];
         requires = [ "docker.service" ];
@@ -419,6 +303,14 @@ in {
           echo "INVENTREE_EMAIL_PASSWORD=$(cat ${config.age.secrets."inventree0110-smtp-password".path})" \
             >> ${inventree.composeDir}/.env
         '' + ''
+
+          # A version switch renames the containers (0.13+ dropped the fixed
+          # container_name:), so the previous stack can still be up against the
+          # same data volume. Tear down whatever is running before starting the
+          # selected version - all persistent state is in the bind-mounted data
+          # dir, not the containers.
+          docker-compose -f docker-compose.yml down --remove-orphans || true
+          docker rm -f inventree-db inventree-cache inventree-server inventree-worker inventree-proxy 2>/dev/null || true
 
           docker-compose -f docker-compose.yml up -d inventree-db
           docker-compose -f docker-compose.yml run --rm inventree-server invoke wait
