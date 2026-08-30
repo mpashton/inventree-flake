@@ -445,6 +445,18 @@ in
       "d ${cfg.dockerDir} 0711 root root -"
     ];
 
+    # nixos-containers only exposes timeoutStartSec (used below); there's no equivalent
+    # option for stopping, so override the generated container@<name>.service directly.
+    # The default 90s DefaultTimeoutStopSec isn't enough headroom for this container's
+    # own shutdown (dockerd tearing down overlay2/netns, then the inner systemd-shutdown
+    # unmounting the container root) to finish. When it doesn't, systemd SIGKILLs the
+    # nspawn supervisor mid-teardown, which never gets to deregister with systemd-machined -
+    # every subsequent start then fails immediately with "Machine already exists" /
+    # "Mount point ... exists already", burns through the restart-limit, and the unit
+    # ends up permanently failed until someone manually kills the orphaned process and
+    # runs `systemctl reset-failed`.
+    #systemd.services."container@${cfg.hostname}".serviceConfig.TimeoutStopSec = "5min";
+
     containers.${cfg.hostname} = {
       privateNetwork = true;
       hostAddress = cfg.hostAddress;
