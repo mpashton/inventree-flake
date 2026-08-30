@@ -1,0 +1,10 @@
+# Added by the inventree NixOS module (not from upstream).
+#
+# The bundled Caddy proxy serves INVENTREE_SITE_URL directly on the tailnet and
+# fetches the HTTPS certificate for that *.ts.net name from the nspawn
+# container's tailscaled - Caddy does this automatically for *.ts.net site
+# addresses, but only if it can reach the daemon socket. Mount it in.
+services:
+  inventree-proxy:
+    volumes:
+      - /run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock

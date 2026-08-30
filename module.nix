@@ -17,30 +17,51 @@ let
   # ---------------------------------------------------------------------------
   # Version registry - auto-discovered from the per-version subdirectories.
   # ---------------------------------------------------------------------------
-  # Each <tag>/ directory next to this file is one supported InvenTree release.
-  # It supplies its own default.nix - { tag; dockerComposeYml; nginxProdConf;
-  # extraEnv ? ""; } - alongside that tag's verbatim upstream docker-compose.yml
-  # and nginx.prod.conf. To add a rung, drop in a new <tag>/ directory; nothing
-  # in this file changes.
+  # Each <tag>/ directory next to this file is one supported InvenTree release,
+  # supplying its own default.nix:
   #
-  # Only the pre-0.14 "nginx reverse proxy" generation fits this shape. 0.14
-  # moved the compose file to docker/docker-compose.yml and swapped the bundled
-  # nginx proxy for Caddy, which would need a second, incompatible topology
-  # (different proxy image, different config file, no nginx.prod.conf).
+  #   { tag; proxy;                       # "nginx" (<= 0.13) | "caddy" (>= 0.14)
+  #     dockerComposeYml;                 # verbatim upstream
+  #     composeOverrideYml;               # extra `-f` compose file, or null
+  #     proxyConfig = { file; text; };    # nginx.prod.conf / Caddyfile, verbatim
+  #     extraEnv ? ""; }
+  #
+  # alongside those verbatim files. To add a rung, drop in a new <tag>/
+  # directory; nothing in this file changes.
+  #
+  # Two proxy topologies are handled:
+  #   - "nginx"  (0.11-0.13): the stack ships an nginx proxy on :80; this module
+  #     fronts it with its own Caddy for the tailnet TLS certificate.
+  #   - "caddy"  (0.14-0.17): the stack ships its own Caddy, which faces the
+  #     tailnet directly and pulls the *.ts.net certificate from the container's
+  #     tailscaled. The module's own Caddy is not used.
+  # 1.0+ is a full rewrite and would need a third entry here.
   versions = lib.mapAttrs
     (name: _: import (./. + "/${name}"))
     (lib.filterAttrs (_: t: t == "directory") (builtins.readDir ./.));
 
   selected = versions.${cfg.version};
   dockerComposeYml = selected.dockerComposeYml;
-  nginxProdConf = selected.nginxProdConf;
+
+  # docker-compose invocation: upstream file, plus our override when the version
+  # ships one (only the caddy generation, for the tailscaled socket mount).
+  composeFileArgs = "-f docker-compose.yml"
+    + lib.optionalString (selected.composeOverrideYml != null) " -f docker-compose.override.yml";
+
+  caddyGen = selected.proxy == "caddy";
+
+  # nginx gen: the stack's proxy is published here and the module's Caddy (or the
+  # user's own) reverse-proxies to it. caddy gen: the stack's Caddy is the front
+  # door, so it takes :80 directly (and :443 from the upstream compose) unless
+  # the user is running their own proxy in front (caddy.enable = false).
+  webPort = if caddyGen && cfg.caddy.enable then 80 else cfg.port;
 
   # Non-secret half of upstream's docker/production/.env. The DB and SMTP
   # passwords are appended at service-start time from the bind-mounted secret
   # files - never baked into the store.
   envTemplate = pkgs: pkgs.writeText "inventree.env" (''
     INVENTREE_EXT_VOLUME=${inventree.dataDir}
-    INVENTREE_WEB_PORT=${toString cfg.port}
+    INVENTREE_WEB_PORT=${toString webPort}
     INVENTREE_DEBUG=False
     INVENTREE_LOG_LEVEL=WARNING
     INVENTREE_DB_ENGINE=postgresql
@@ -52,6 +73,12 @@ let
     INVENTREE_PLUGINS_ENABLED=False
     INVENTREE_TAG=${cfg.version}
     COMPOSE_PROJECT_NAME=${cfg.composeProjectName}
+  '' + lib.optionalString caddyGen ''
+    INVENTREE_SITE_URL=${cfg.siteUrl}
+    INVENTREE_USE_X_FORWARDED_HOST=True
+    INVENTREE_USE_X_FORWARDED_PORT=True
+    INVENTREE_USE_X_FORWARDED_PROTO=True
+    INVENTREE_AUTO_UPDATE=False
   '' + (selected.extraEnv or "") + lib.optionalString cfg.enableGoogleLogin ''
     INVENTREE_SOCIAL_BACKENDS=allauth.socialaccount.providers.google
   '' + lib.optionalString (cfg.smtp.host != "") ''
@@ -66,21 +93,25 @@ in
 {
   options.services.containers.inventree = {
     enable = lib.mkEnableOption ''
-      a legacy InvenTree instance (releases 0.11-0.13, the pre-0.14 nginx
-      reverse-proxy generation) running its upstream production docker-compose
-      stack inside a systemd-nspawn container
+      a legacy InvenTree instance (releases 0.11-0.17) running its upstream
+      production docker-compose stack inside a systemd-nspawn container
     '';
 
     version = lib.mkOption {
       type = lib.types.enum (lib.attrNames versions);
-      default = "0.13.6";
+      default = "0.17.14";
       description = ''
-        Which InvenTree release to run. Only the pre-0.14 (nginx reverse proxy)
-        generation is offered. Raising this is an in-place upgrade against the
-        shared {option}`services.containers.inventree.dataDir` database - schema migrations
-        run automatically on every start. Downgrades are not supported. Every
-        offered release is years past upstream security support and must stay
-        off the public internet.
+        Which InvenTree release to run. Two proxy generations are offered:
+        0.11-0.13 (the stack ships nginx; the module fronts it with its own
+        Caddy) and 0.14-0.17 (the stack ships its own Caddy, which faces the
+        tailnet directly). 0.17.14 is the last release before the 1.0 rewrite -
+        a good checkpoint to reach and verify.
+
+        Raising this is an in-place upgrade against the shared
+        {option}`services.containers.inventree.dataDir` database - schema
+        migrations run automatically on every start. Downgrades are not
+        supported. Every offered release is past upstream security support and
+        must stay off the public internet.
       '';
     };
 
@@ -108,11 +139,25 @@ in
       default = cfg.hostname;
       defaultText = lib.literalExpression "config.services.containers.inventree.hostname";
       description = ''
-        Host the bundled Caddy serves the InvenTree UI on, inside the container.
-        Set this to the fully-qualified name it should answer to (e.g. the
-        `<hostname>.<tailnet>.ts.net` MagicDNS name); it defaults to the bare
-        container hostname. Ignored when {option}`services.containers.inventree.caddy.enable`
-        is false.
+        Host name InvenTree is reached at. For the 0.11-0.13 generation this is
+        the module Caddy's vhost; for 0.14-0.17 it is the default host part of
+        {option}`services.containers.inventree.siteUrl`. Set it to the
+        fully-qualified name users type (e.g. the `<hostname>.<tailnet>.ts.net`
+        MagicDNS name); defaults to the bare container hostname.
+      '';
+    };
+
+    siteUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "https://${cfg.virtualHost}";
+      defaultText = lib.literalExpression ''"https://" + config.services.containers.inventree.virtualHost'';
+      description = ''
+        `INVENTREE_SITE_URL` - the canonical externally-visible URL. Used from
+        the 0.14 (Caddy) generation on: it is the bundled Caddy's site address
+        (an `https://<name>.ts.net` value makes Caddy fetch the tailnet
+        certificate automatically), and InvenTree derives its CSRF trusted
+        origins from it - mandatory from 0.16, the server refuses to start
+        without it. Ignored by the 0.11-0.13 (nginx) generation.
       '';
     };
 
@@ -120,10 +165,12 @@ in
       type = lib.types.port;
       default = 1337;
       description = ''
-        TCP port the InvenTree stack's own nginx proxy publishes on the
-        container. The bundled Caddy reverse-proxies to it; if you set
-        {option}`services.containers.inventree.caddy.enable` to false, point your own proxy
-        at `http://<appAddress>:<port>`.
+        TCP port the InvenTree stack's own proxy publishes on the container.
+        0.11-0.13: the module's Caddy (or, with
+        {option}`services.containers.inventree.caddy.enable` = false, your own
+        proxy) reverse-proxies to `http://<appAddress>:<port>`. 0.14-0.17: the
+        bundled Caddy takes :80 and :443 directly and this is only used when
+        `caddy.enable` = false.
       '';
     };
 
@@ -245,10 +292,14 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Front InvenTree with Caddy inside the container, serving
-        {option}`services.containers.inventree.virtualHost` with a Tailscale-issued
-        certificate. Requires {option}`services.containers.inventree.tailscale.enable`.
-        Disable to expose `http://<appAddress>:<port>` for your own proxy.
+        Let the module terminate HTTPS for the tailnet itself. For the 0.11-0.13
+        generation this runs a NixOS `services.caddy` in the container in front
+        of the stack's nginx; for 0.14-0.17 the stack already ships Caddy, so
+        this just means the bundled Caddy serves
+        {option}`services.containers.inventree.siteUrl` on :443 with a
+        Tailscale-issued certificate. Requires
+        {option}`services.containers.inventree.tailscale.enable`. Disable to put
+        your own reverse proxy in front (pointing at `http://<appAddress>:<port>`).
       '';
     };
 
@@ -319,7 +370,11 @@ in
       }
       {
         assertion = cfg.caddy.enable -> cfg.tailscale.enable;
-        message = "services.containers.inventree.caddy.enable requires services.containers.inventree.tailscale.enable (the bundled Caddy serves virtualHost with a Tailscale certificate). Disable caddy to front the container with your own proxy.";
+        message = "services.containers.inventree.caddy.enable requires services.containers.inventree.tailscale.enable (the module serves virtualHost with a Tailscale certificate). Disable caddy to front the container with your own proxy.";
+      }
+      {
+        assertion = (caddyGen && cfg.caddy.enable) -> cfg.tailscale.enable;
+        message = "InvenTree ${cfg.version}: the stack's bundled Caddy serves services.containers.inventree.siteUrl and fetches its certificate from the container's tailscaled, so services.containers.inventree.tailscale.enable must be true (or set caddy.enable = false and terminate TLS at your own proxy).";
       }
     ];
 
@@ -413,7 +468,12 @@ in
           authKeyFile = lib.mkIf (cfg.tailscale.authKeyFile != null)
             "${inventree.secretsDir}/ts-authkey";
           disableTaildrop = true;
-          permitCertUid = lib.mkIf cfg.caddy.enable "caddy";
+          # nginx gen: the NixOS `caddy` user calls `tailscale cert`.
+          # caddy gen: the bundled Caddy (root, in the docker proxy container)
+          # fetches the cert over the daemon socket.
+          permitCertUid =
+            if caddyGen then "root"
+            else lib.mkIf cfg.caddy.enable "caddy";
         };
 
         virtualisation.docker = {
@@ -423,8 +483,12 @@ in
           storageDriver = "overlay2";
         };
 
-        environment.etc."inventree-docker/docker-compose.yml".text = dockerComposeYml;
-        environment.etc."inventree-docker/nginx.prod.conf".text = nginxProdConf;
+        environment.etc = {
+          "inventree-docker/docker-compose.yml".text = dockerComposeYml;
+          "inventree-docker/${selected.proxyConfig.file}".text = selected.proxyConfig.text;
+        } // lib.optionalAttrs (selected.composeOverrideYml != null) {
+          "inventree-docker/docker-compose.override.yml".text = selected.composeOverrideYml;
+        };
 
         systemd.services.inventree-compose = {
           description = "InvenTree ${cfg.version} docker-compose stack";
@@ -462,20 +526,20 @@ in
             # same data volume. Tear down whatever is running before starting the
             # selected version - all persistent state is in the bind-mounted data
             # dir, not the containers.
-            docker-compose -f docker-compose.yml down --remove-orphans || true
+            docker-compose ${composeFileArgs} down --remove-orphans || true
             docker rm -f inventree-db inventree-cache inventree-server inventree-worker inventree-proxy 2>/dev/null || true
 
-            docker-compose -f docker-compose.yml up -d inventree-db
-            docker-compose -f docker-compose.yml run --rm inventree-server invoke wait
-            docker-compose -f docker-compose.yml run --rm inventree-server invoke migrate
-            docker-compose -f docker-compose.yml run --rm inventree-server invoke static
+            docker-compose ${composeFileArgs} up -d inventree-db
+            docker-compose ${composeFileArgs} run --rm inventree-server invoke wait
+            docker-compose ${composeFileArgs} run --rm inventree-server invoke migrate
+            docker-compose ${composeFileArgs} run --rm inventree-server invoke static
           '';
 
           serviceConfig = {
             Type = "simple";
             WorkingDirectory = inventree.composeDir;
-            ExecStart = "${pkgs.docker-compose}/bin/docker-compose -f docker-compose.yml up --remove-orphans";
-            ExecStop = "${pkgs.docker-compose}/bin/docker-compose -f docker-compose.yml down";
+            ExecStart = "${pkgs.docker-compose}/bin/docker-compose ${composeFileArgs} up --remove-orphans";
+            ExecStop = "${pkgs.docker-compose}/bin/docker-compose ${composeFileArgs} down";
             ExecStopPost = "${pkgs.coreutils}/bin/shred -u ${inventree.composeDir}/.env";
             Restart = "on-failure";
             RestartSec = 10;
@@ -485,7 +549,10 @@ in
           };
         };
 
-        services.caddy = lib.mkIf cfg.caddy.enable {
+        # nginx generation only: the stack has no TLS front, so the module runs
+        # its own Caddy for the tailnet certificate. The caddy generation's stack
+        # already ships Caddy (it serves siteUrl itself).
+        services.caddy = lib.mkIf (cfg.caddy.enable && !caddyGen) {
           enable = true;
           virtualHosts.${cfg.virtualHost} = {
             extraConfig = ''

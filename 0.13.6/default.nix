@@ -3,8 +3,13 @@
 # https://github.com/inventree/InvenTree/tree/0.13.6/docker/production
 {
   tag = "0.13.6";
+  proxy = "nginx";
   dockerComposeYml = builtins.readFile ./docker-compose.yml;
-  nginxProdConf = builtins.readFile ./nginx.prod.conf;
+  composeOverrideYml = null;
+  proxyConfig = {
+    file = "nginx.prod.conf";
+    text = builtins.readFile ./nginx.prod.conf;
+  };
 
   # Full `KEY=value` lines appended verbatim to the generated .env for this
   # release. None needed yet; kept as a hook because env var names drift
