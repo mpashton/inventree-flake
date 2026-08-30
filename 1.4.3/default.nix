@@ -1,12 +1,12 @@
-# InvenTree 1.4.4 - post-0.14 "bundled Caddy" generation, 1.x series.
+# InvenTree 1.4.3 - post-0.14 "bundled Caddy" generation, 1.x series.
 # docker-compose.yml / Caddyfile are verbatim from
-# https://github.com/inventree/InvenTree/tree/1.4.4/contrib/container
+# https://github.com/inventree/InvenTree/tree/1.4.3/contrib/container
 #
 # 1.2+ (Django 5.2) requires PostgreSQL 14+. If you are still on a postgres:13
 # cluster, migrate it before bumping past 1.1
 # (https://inventree.org/blog/2026/02/12/db-update).
 {
-  tag = "1.4.4";
+  tag = "1.4.3";
   proxy = "caddy";
   dockerComposeYml = builtins.readFile ./docker-compose.yml;
   proxyConfig = {
