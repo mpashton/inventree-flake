@@ -1,14 +1,16 @@
 # inventree-legacy-container
 
-A NixOS module that runs a **legacy InvenTree** instance (releases **0.11 -
-0.17**) from its upstream production `docker-compose` stack, inside a
-`systemd-nspawn` container, reachable over Tailscale.
+A NixOS module that runs an **InvenTree** instance (releases **0.11 through 1.1**)
+from its upstream production `docker-compose` stack, inside a `systemd-nspawn`
+container, reachable over Tailscale.
 
 ## ⚠️ Security
 
-These InvenTree releases are **past upstream security support**. This module is
-for keeping an old instance alive on an internal network while you plan the jump
-to a current release - not for a fresh deployment.
+The 0.11 - 0.17 releases are **past upstream security support**. This module
+exists to keep an old instance alive on an internal network while you climb the
+upgrade ladder toward a current release - not for a fresh deployment. The 1.0 /
+1.1 rungs are here as the bridge to that current line (and the last that still
+run on a `postgres:13` cluster).
 
 By default the instance is published **only to your tailnet**. The container
 turns its own firewall off and relies on the private veth link not being
@@ -21,9 +23,11 @@ responsibility.
 A single nspawn container running upstream's production compose stack verbatim
 for the chosen tag:
 
-- PostgreSQL 13 (every supported version)
+- PostgreSQL - `postgres:13` for 0.11 - 0.17, `postgres:17` for 1.x
+  (override with `database.image`)
 - gunicorn (InvenTree web server)
 - django-q (background worker)
+- redis cache (1.x; profile-disabled on 0.x)
 - the stack's own reverse proxy / static+media server
 
 plus, in the container, Docker itself and Tailscale. All InvenTree state
@@ -35,16 +39,14 @@ bind-mounted in as `INVENTREE_EXT_VOLUME`.
 | versions | stack proxy | how the tailnet sees it |
 |---|---|---|
 | **0.11 - 0.13** | bundled **nginx** on `:80` | the module runs its own NixOS **Caddy** in front, terminating TLS for `virtualHost` with a `tailscale cert` |
-| **0.14 - 0.17** | bundled **Caddy** | it faces the tailnet **directly**, serving `siteUrl` and fetching the `*.ts.net` certificate straight from the container's `tailscaled` |
-
-**0.17.14 is the last release before the 1.0 rewrite** - reach it, verify the
-instance, and back up `dataDir` before attempting 1.x (not covered here).
+| **0.14 onward** | bundled **Caddy** | it faces the tailnet **directly**, serving `siteUrl` and fetching the `*.ts.net` certificate straight from the container's `tailscaled` |
 
 The per-tag `docker-compose.yml` and proxy config (`nginx.prod.conf` or
 `Caddyfile`) under each `<tag>/` directory are copied **verbatim** from
-`https://github.com/inventree/InvenTree/tree/<tag>/`. The 0.14+ dirs add one
-non-upstream file, `docker-compose.override.yml`, which bind-mounts
-`tailscaled.sock` into the proxy container so Caddy can fetch the certificate.
+`https://github.com/inventree/InvenTree/tree/<tag>/`. The module generates one
+extra compose file at runtime, `docker-compose.override.yml`, holding only what
+it must change: the `tailscaled.sock` mount (caddy generation) and a pinned
+`postgres` image (when `database.image` is set).
 
 ## Requirements
 
@@ -85,7 +87,7 @@ services.containers.inventree = {
   enable = true;
   tailscale.enable = false;
   caddy.enable = false;      # 0.11-0.13: stack nginx on :port is yours to proxy.
-                             # 0.14-0.17: stack Caddy serves `siteUrl` plain, on :port.
+                             # 0.14 onward: stack Caddy serves `siteUrl` plain, on :port.
   siteUrl = "https://inventree.example.com";  # 0.14+: whatever your proxy presents
   database.passwordFile = "/run/secrets/inventree-db";
 };
@@ -106,25 +108,37 @@ file exists before `container@<hostname>.service` starts.
 
 ## Versions & upgrades
 
-`version` is an enum over the `<tag>/` directories. Every supported tag shares
-one `postgres:13` and one data directory, so raising `version` is an **in-place
-upgrade**: the new image points at the existing database and the container's
-`preStart` runs `invoke migrate` on every start. **Downgrades are not
-supported.**
+`version` is an enum over the `<tag>/` directories. Raising it is an **in-place
+upgrade** against the existing `dataDir`: the new image starts against the same
+database and the container's `preStart` runs `invoke migrate` on every start.
+**Downgrades are not supported.**
 
 Add a release by dropping in a new `<tag>/` directory whose `default.nix`
 declares `proxy` (`"nginx"` / `"caddy"`) and reads its verbatim
-`docker-compose.yml` + proxy config (plus, for the caddy generation,
-`docker-compose.override.yml`). Nothing in `module.nix` changes.
+`docker-compose.yml` + proxy config. Nothing in `module.nix` changes.
 
 ### The 0.13 -> 0.14 step
 
-This is where the proxy topology flips (nginx -> the stack's own Caddy). The
-module handles the mechanics; nothing to do beyond the version bump. From
-**0.16** on, `INVENTREE_SITE_URL` (set from the `siteUrl` option) must be correct
-or the server refuses to start / login fails with a CSRF error - `siteUrl`
-defaults to `https://<virtualHost>`, so just make sure `virtualHost` is the real
-MagicDNS name.
+The proxy topology flips here (nginx -> the stack's own Caddy). The module
+handles the mechanics; nothing to do beyond the version bump. Also note: when
+switching off the 0.13 line the old containers use a different naming scheme, so
+tear the running stack down by hand first (`docker rm -f $(docker ps -aq)` inside
+the container - all state is in `dataDir`). From **0.16** on, `INVENTREE_SITE_URL`
+(set from the `siteUrl` option) must be correct or login fails with a CSRF error;
+it defaults to `https://<virtualHost>`, so make `virtualHost` the real MagicDNS
+name.
+
+### The 0.17 -> 1.0 step and the PostgreSQL wall
+
+1.0 is a rewrite. The compose file jumps to `postgres:17`, and **InvenTree 1.2+
+hard-requires PostgreSQL 14+**. Postgres major versions are on-disk incompatible,
+so this is a dump/restore, not a transparent bump:
+
+1. Get to **1.1.12** with `database.image = "postgres:13"` pinned (it still runs
+   on your existing 13 cluster). Verify.
+2. Follow <https://inventree.org/blog/2026/02/12/db-update>: `pg_dump` the 13
+   cluster, move the old `pgdb` dir aside, set `database.image = "postgres:17"`
+   (or `null`), restore into the fresh 17 cluster, then go to 1.2+.
 
 ### Known upgrade gotcha: 0.11 -> 0.12/0.13
 

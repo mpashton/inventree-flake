@@ -5,7 +5,6 @@
   tag = "0.12.10";
   proxy = "nginx";
   dockerComposeYml = builtins.readFile ./docker-compose.yml;
-  composeOverrideYml = null;
   proxyConfig = {
     file = "nginx.prod.conf";
     text = builtins.readFile ./nginx.prod.conf;

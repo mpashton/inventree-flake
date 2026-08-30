@@ -1,5 +1,5 @@
 {
-  description = "InvenTree (legacy 0.11-0.17) in a systemd-nspawn container - NixOS module";
+  description = "InvenTree (0.11 - 1.1) in a systemd-nspawn container - NixOS module";
 
   # Only used to run `nix flake check`; consumers point their own nixpkgs at the
   # module via `inputs.inventree.inputs.nixpkgs.follows`.
@@ -40,8 +40,9 @@
       nixosModules.default = self.nixosModules.inventree;
 
       checks = forAllSystems (system: {
-        eval-caddy = evalFor system "0.17.14"; # post-0.14 bundled-Caddy generation
         eval-nginx = evalFor system "0.13.6"; # pre-0.14 nginx generation
+        eval-caddy = evalFor system "0.17.14"; # 0.14-0.17 bundled-Caddy generation
+        eval-v1 = evalFor system "1.1.12"; # 1.x series (renamed port vars, postgres:17)
       });
     };
 }
