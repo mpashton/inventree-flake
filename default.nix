@@ -15,7 +15,6 @@ let
     hostDockerDir = "/srv/inventree/docker"; # backs the container's own /var/lib/docker
 
     containerName = cfg.hostname;
-    virtualHost = "${cfg.hostname}.tail9afd.ts.net"; # adjust to your tailnet
     hostAddress = cfg.hostAddress;
     appAddress = cfg.appAddress;
 
@@ -94,9 +93,19 @@ in {
       type = lib.types.str;
       default = "inventree0110";
       description = ''
-        Hostname of the InvenTree container. Also used for the nspawn container
-        name and the "<hostname>.tail9afd.ts.net" Tailscale virtual host that
-        Caddy serves.
+        Hostname of the InvenTree container. Also used as the nspawn container
+        name and as the default `virtualHost`.
+      '';
+    };
+    virtualHost = lib.mkOption {
+      type = lib.types.str;
+      default = cfg.hostname;
+      defaultText = lib.literalExpression "config.services.inventree.hostname";
+      description = ''
+        Host Caddy serves the InvenTree UI on, inside the container. Set this to
+        the fully-qualified name it should answer to (e.g. the
+        "<hostname>.<tailnet>.ts.net" MagicDNS name); it defaults to the bare
+        container hostname.
       '';
     };
     hostAddress = lib.mkOption {
@@ -334,7 +343,7 @@ in {
 
       services.caddy = {
         enable = true;
-        virtualHosts.${inventree.virtualHost} = {
+        virtualHosts.${cfg.virtualHost} = {
           extraConfig = ''
             reverse_proxy http://localhost:${toString inventree.webPort}
           '';
