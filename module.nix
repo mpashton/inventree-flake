@@ -105,6 +105,7 @@ let
     INVENTREE_USE_X_FORWARDED_PROTO=True
     INVENTREE_AUTO_UPDATE=False
   '' + lib.optionalString isV1 ''
+    INVENTREE_WEB_PORT=8000
     INVENTREE_HTTP_PORT=${toString webPort}
     INVENTREE_HTTPS_PORT=443
     INVENTREE_CACHE_ENABLED=True
@@ -124,7 +125,7 @@ in
 {
   options.services.containers.inventree = {
     enable = lib.mkEnableOption ''
-      an InvenTree instance (releases 0.11 through 1.1) running its upstream
+      an InvenTree instance (releases 0.11 through 1.5) running its upstream
       production docker-compose stack inside a systemd-nspawn container
     '';
 
@@ -136,8 +137,8 @@ in
         0.11-0.13 (the stack ships nginx; the module fronts it with its own
         Caddy) and 0.14 onward (the stack ships its own Caddy, which faces the
         tailnet directly). 0.17.14 is the last release before the 1.0 rewrite;
-        1.0.9 / 1.1.12 are the 1.x rungs and are the last that still run against
-        a `postgres:13` cluster (see
+        1.1.12 is the last that runs on a `postgres:13` cluster (1.2+ needs
+        PostgreSQL 14+ - see
         {option}`services.containers.inventree.database.image`).
 
         Raising this is an in-place upgrade against the shared
@@ -427,6 +428,12 @@ in
       {
         assertion = (caddyGen && cfg.caddy.enable) -> cfg.tailscale.enable;
         message = "InvenTree ${cfg.version}: the stack's bundled Caddy serves services.containers.inventree.siteUrl and fetches its certificate from the container's tailscaled, so services.containers.inventree.tailscale.enable must be true (or set caddy.enable = false and terminate TLS at your own proxy).";
+      }
+      {
+        assertion = !(lib.versionAtLeast cfg.version "1.2.0"
+          && cfg.database.image != null
+          && lib.hasInfix ":13" cfg.database.image);
+        message = "InvenTree ${cfg.version} (Django 5.2) requires PostgreSQL 14+, but services.containers.inventree.database.image is pinned to a 13 image. Migrate the cluster first - https://inventree.org/blog/2026/02/12/db-update - then set database.image to \"postgres:17\" (or null). 1.1.12 is the last version that runs on postgres:13.";
       }
     ];
 

@@ -1,6 +1,6 @@
 # inventree-legacy-container
 
-A NixOS module that runs an **InvenTree** instance (releases **0.11 through 1.1**)
+A NixOS module that runs an **InvenTree** instance (releases **0.11 through 1.5**)
 from its upstream production `docker-compose` stack, inside a `systemd-nspawn`
 container, reachable over Tailscale.
 
@@ -8,9 +8,9 @@ container, reachable over Tailscale.
 
 The 0.11 - 0.17 releases are **past upstream security support**. This module
 exists to keep an old instance alive on an internal network while you climb the
-upgrade ladder toward a current release - not for a fresh deployment. The 1.0 /
-1.1 rungs are here as the bridge to that current line (and the last that still
-run on a `postgres:13` cluster).
+upgrade ladder toward a current release - not for a fresh deployment. 1.x is the
+current line; `1.1.12` is the last rung that still runs on a `postgres:13`
+cluster, so it is the staging point for the database migration before `1.2`+.
 
 By default the instance is published **only to your tailnet**. The container
 turns its own firewall off and relies on the private veth link not being
@@ -138,7 +138,10 @@ so this is a dump/restore, not a transparent bump:
    on your existing 13 cluster). Verify.
 2. Follow <https://inventree.org/blog/2026/02/12/db-update>: `pg_dump` the 13
    cluster, move the old `pgdb` dir aside, set `database.image = "postgres:17"`
-   (or `null`), restore into the fresh 17 cluster, then go to 1.2+.
+   (or `null`), restore into the fresh 17 cluster, then climb 1.2 -> 1.5.
+
+The module refuses to evaluate a `1.2`+ version while `database.image` points at
+a `:13` tag, to catch this before the stack crash-loops.
 
 ### Known upgrade gotcha: 0.11 -> 0.12/0.13
 
