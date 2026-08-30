@@ -545,7 +545,7 @@ in
             RestartSec = 10;
             # First-run migrations (full schema + rebuild_models/rebuild_thumbnails +
             # collectstatic) can comfortably outrun systemd's 90s default.
-            TimeoutStartSec = 600;
+            TimeoutStartSec = 1200;
           };
         };
 
