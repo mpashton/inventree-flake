@@ -180,7 +180,7 @@ let
 
   # Non-secret half of upstream's docker/production/.env. INVENTREE_DB_PASSWORD is appended
   # at service-start time from the agenix secret - never baked into the store.
-  envTemplate = pkgs: pkgs.writeText "inventree0110.env" ''
+  envTemplate = pkgs: pkgs.writeText "inventree0110.env" (''
     INVENTREE_EXT_VOLUME=${inventree.dataDir}
     INVENTREE_WEB_PORT=${toString inventree.webPort}
     INVENTREE_DEBUG=False
@@ -194,7 +194,16 @@ let
     INVENTREE_PLUGINS_ENABLED=False
     INVENTREE_TAG=${inventree.inventreeTag}
     COMPOSE_PROJECT_NAME=inventree-0-11-0
-  '';
+  '' + lib.optionalString cfg.enableGoogleLogin ''
+    INVENTREE_SOCIAL_BACKENDS=allauth.socialaccount.providers.google
+  '' + lib.optionalString (cfg.smtp.host != "") ''
+    INVENTREE_EMAIL_HOST=${cfg.smtp.host}
+    INVENTREE_EMAIL_PORT=${toString cfg.smtp.port}
+    INVENTREE_EMAIL_USERNAME=${cfg.smtp.username}
+    INVENTREE_EMAIL_SENDER=${cfg.smtp.sender}
+    INVENTREE_EMAIL_TLS=${if cfg.smtp.useTls then "True" else "False"}
+    INVENTREE_EMAIL_SSL=${if cfg.smtp.useSsl then "True" else "False"}
+  '');
 
 in {
   options.services.inventree0110 = {
@@ -222,6 +231,61 @@ in {
         IPv4 address assigned to the InvenTree container on its private
         veth link (the container's own end of the point-to-point pair).
       '';
+    };
+    enableGoogleLogin = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Enable the "Sign in with Google" backend. The actual OAuth client
+        ID/secret are *not* configured here - they live in the database as a
+        django-allauth SocialApp row (Django Admin -> Sites -> Social
+        Applications), which comes along for free with any database restore
+        from an instance that already had Google login set up the same way.
+        This flag only controls whether InvenTree loads the google provider
+        app at all.
+      '';
+    };
+    smtp = lib.mkOption {
+      description = ''
+        Outbound mail (password resets, notifications) via SMTP. Leave
+        `host` blank to disable email entirely. The password is supplied
+        separately via agenix (secrets/inventree0110-smtp-password.age).
+      '';
+      default = {};
+      type = lib.types.submodule {
+        options = {
+          host = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+            description = "SMTP host.";
+          };
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 587;
+            description = "SMTP port.";
+          };
+          username = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+            description = "SMTP auth username.";
+          };
+          sender = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+            description = "From: address for outbound mail.";
+          };
+          useTls = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Use STARTTLS.";
+          };
+          useSsl = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Use implicit TLS/SSL (mutually exclusive with useTls).";
+          };
+        };
+      };
     };
   };
 
@@ -303,6 +367,10 @@ in {
         file = ./${inventree.secretsDir}/inventree-db-password.age;
         mode = "400";
       };
+      age.secrets."inventree0110-smtp-password" = lib.mkIf (cfg.smtp.host != "") {
+        file = ./${inventree.secretsDir}/inventree0110-smtp-password.age;
+        mode = "400";
+      };
 
       services.tailscale = {
         enable = true;
@@ -347,6 +415,10 @@ in {
           install -m 600 ${envTemplate pkgs} ${inventree.composeDir}/.env
           echo "INVENTREE_DB_PASSWORD=$(cat ${config.age.secrets."inventree-db-password".path})" \
             >> ${inventree.composeDir}/.env
+        '' + lib.optionalString (cfg.smtp.host != "") ''
+          echo "INVENTREE_EMAIL_PASSWORD=$(cat ${config.age.secrets."inventree0110-smtp-password".path})" \
+            >> ${inventree.composeDir}/.env
+        '' + ''
 
           docker-compose -f docker-compose.yml up -d inventree-db
           docker-compose -f docker-compose.yml run --rm inventree-server invoke wait
