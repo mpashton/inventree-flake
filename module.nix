@@ -9,15 +9,30 @@
 # host config) the containerisation and Tailscale. When `caddy.enable`, the
 # stack's TLS front needs a reachable `tailscaled` that permits
 # {option}`services.inventree-compose.certUid` to fetch the `*.ts.net` cert.
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, options, ... }:
 
 let
   cfg = config.services.inventree-compose;
 
+  # A `service-container` wrapper declares `options.serviceContainer.bindMounts`;
+  # its presence means we're the inner system of one. Then we use fixed
+  # in-container paths and hand the wrapper the host directories to bind-mount
+  # there. On a bare host we use the operator's `dataDir` / `*File` paths as-is.
+  containerised = options ? serviceContainer;
+
+  paths =
+    if containerised then {
+      # in-container mount points (the wrapper maps the host dirs onto these)
+      extVolume = "/var/lib/inventree/data";
+      dbPassword = "/run/inventree/db-password";
+      smtpPassword = "/run/inventree/smtp-password";
+    } else {
+      extVolume = cfg.dataDir;
+      dbPassword = toString cfg.database.passwordFile;
+      smtpPassword = if cfg.smtp.passwordFile != null then toString cfg.smtp.passwordFile else null;
+    };
+
   inventree = {
-    # Where InvenTree's single external volume lives in this system's filesystem
-    # (the postgres cluster, media, static files and Django secret key). Set from
-    # `dataDir`; in a container the wrapper bind-mounts the host directory here.
     composeDir = "/etc/inventree-docker";
   };
 
@@ -94,7 +109,7 @@ let
   # passwords are appended at service-start time from their files - never baked
   # into the store.
   envTemplate = pkgs.writeText "inventree.env" (''
-    INVENTREE_EXT_VOLUME=${cfg.dataDir}
+    INVENTREE_EXT_VOLUME=${paths.extVolume}
     INVENTREE_DEBUG=False
     INVENTREE_LOG_LEVEL=WARNING
     INVENTREE_DB_ENGINE=postgresql
@@ -212,26 +227,15 @@ in
 
     dataDir = lib.mkOption {
       type = lib.types.str;
-      default = "/var/lib/inventree/data";
+      default = "/srv/inventree/data";
       description = ''
-        Directory holding InvenTree's single external volume (postgres cluster,
-        media, static files, Django secret key) - `INVENTREE_EXT_VOLUME`. In a
-        container this is the in-container path the wrapper bind-mounts the host
-        directory to; on a host it is a real directory. A `d <dataDir> 0777`
-        tmpfiles rule is created for it. Switching
+        **External** host directory holding InvenTree's single data volume (the
+        postgres cluster, media, static files, Django secret key). On a bare
+        host this is used directly as `INVENTREE_EXT_VOLUME`; inside a
+        `service-container` the module bind-mounts it onto a fixed in-container
+        path automatically (no `bindMounts` entry needed). Switching
         {option}`services.inventree-compose.version` migrates this database in
         place, so keep it stable across upgrades.
-      '';
-    };
-
-    dockerDir = lib.mkOption {
-      type = lib.types.str;
-      default = "/var/lib/docker";
-      description = ''
-        Directory backing `/var/lib/docker` for the stack's images and layers,
-        kept separate from {option}`services.inventree-compose.dataDir` so it can
-        be discarded without touching the database. A `d <dockerDir> 0711`
-        tmpfiles rule is created for it.
       '';
     };
 
@@ -395,7 +399,7 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf cfg.enable (lib.mkMerge [ {
     assertions = [
       {
         assertion = cfg.database.passwordFile != null;
@@ -419,9 +423,10 @@ in
 
     systemd.tmpfiles.rules = [
       # Wide open: the postgres/inventree images use their own internal UIDs which don't map
-      # to anything on the host, and it isn't worth chasing exact numbers here.
-      "d ${cfg.dataDir} 0777 root root -"
-      "d ${cfg.dockerDir} 0711 root root -"
+      # to anything on the host, and it isn't worth chasing exact numbers here. On a
+      # bare host this is dataDir; inside a container it is the mount point (perms
+      # propagate through the bind mount to the host directory).
+      "d ${paths.extVolume} 0777 root root -"
     ];
 
     virtualisation.docker = {
@@ -462,10 +467,10 @@ in
       preStart = ''
         set -o errexit
         install -m 600 ${envTemplate} ${inventree.composeDir}/.env
-        echo "INVENTREE_DB_PASSWORD=$(cat ${cfg.database.passwordFile})" \
+        echo "INVENTREE_DB_PASSWORD=$(cat ${paths.dbPassword})" \
           >> ${inventree.composeDir}/.env
       '' + lib.optionalString (cfg.smtp.host != "") ''
-        echo "INVENTREE_EMAIL_PASSWORD=$(cat ${cfg.smtp.passwordFile})" \
+        echo "INVENTREE_EMAIL_PASSWORD=$(cat ${paths.smtpPassword})" \
           >> ${inventree.composeDir}/.env
       '' + ''
 
@@ -507,5 +512,21 @@ in
         '';
       };
     };
-  };
+  }
+
+    # Inside a service-container: hand the wrapper the external directories to
+    # bind-mount onto our fixed in-container paths, so no `bindMounts` clause is
+    # needed at the call site. (The data volume; the secret files, so
+    # preStart's `cat` works.) `optionalAttrs`, not `mkIf`: on a bare host the
+    # `serviceContainer` option isn't declared, so the attr must not appear at
+    # all.
+    (lib.optionalAttrs containerised {
+      serviceContainer.bindMounts = {
+        ${paths.extVolume} = { hostPath = cfg.dataDir; isReadOnly = false; };
+        ${paths.dbPassword} = { hostPath = toString cfg.database.passwordFile; isReadOnly = true; };
+      } // lib.optionalAttrs (cfg.smtp.passwordFile != null) {
+        ${paths.smtpPassword} = { hostPath = toString cfg.smtp.passwordFile; isReadOnly = true; };
+      };
+    })
+  ]);
 }

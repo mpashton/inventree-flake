@@ -75,30 +75,34 @@ services.inventree-compose = {
 ### In a service-container
 
 ```nix
-services.serviceContainers.inventree = {
+services.serviceContainers.instances.inventree = {
   stateVersion = "25.05";
-  hostAddress = "192.168.100.2";
-  localAddress = "192.168.100.15";
   docker.enable = true;
   tailscale = { enable = true; permitCertUid = "root"; };   # = certUid for 0.14+
-  bindMounts = {
-    "/var/lib/inventree/data"     = { hostPath = "/srv/inventree/data"; isReadOnly = false; };
-    "/run/agenix/inventree-db"    = { hostPath = config.age.secrets."inventree-db".path; };
-  };
   modules = [ inputs.inventree.nixosModules.default ];
   config.services.inventree-compose = {
     enable = true;
     version = "1.5.2";
-    database.passwordFile = "/run/agenix/inventree-db";
+    dataDir = "/srv/inventree/data";
+    database.passwordFile = config.age.secrets."inventree-db".path;
   };
 };
 ```
 
+No `bindMounts` clause: the module is container-aware. It keeps the
+in-container paths (`/var/lib/inventree/data`, `/run/inventree/*`) to itself and
+hands the wrapper the external directories to bind-mount there - the `dataDir`
+host directory and the secret files behind `database.passwordFile` /
+`smtp.passwordFile`. Override `dataDir` to move the host data directory;
+everything else is automatic.
+
 ## Secrets
 
 `database.passwordFile` / `smtp.passwordFile` are paths read at service start -
-never copied into the store. On a host they are real paths; in a container,
-bind-mount the host secret at that same path.
+never copied into the store. On a bare host they are used as given. Inside a
+`service-container` the module treats them as **host** paths and asks the
+wrapper to bind-mount each onto a fixed in-container path, so the same option
+value works in either mode.
 
 ## Versions & upgrades
 
