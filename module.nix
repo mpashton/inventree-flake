@@ -417,9 +417,6 @@ in
       }
     ];
 
-    warnings = lib.optional (tlsFront)
-      "services.inventree-compose: caddy.enable is on - the stack's TLS front needs a tailscaled reachable at ${cfg.tailscaleSocket} that permits uid ${toString cfg.certUid} to fetch the ${cfg.virtualHost} certificate. In a container, set your wrapper's tailscale.permitCertUid to config.services.inventree-compose.certUid.";
-
     systemd.tmpfiles.rules = [
       # Wide open: the postgres/inventree images use their own internal UIDs which don't map
       # to anything on the host, and it isn't worth chasing exact numbers here.
