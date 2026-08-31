@@ -521,6 +521,9 @@ in
     # `serviceContainer` option isn't declared, so the attr must not appear at
     # all.
     (lib.optionalAttrs containerised {
+      # The stack is Docker; have the wrapper set up docker-in-nspawn for us.
+      serviceContainer.docker.enable = true;
+
       serviceContainer.bindMounts = {
         ${paths.extVolume} = { hostPath = cfg.dataDir; isReadOnly = false; };
         ${paths.dbPassword} = { hostPath = toString cfg.database.passwordFile; isReadOnly = true; };

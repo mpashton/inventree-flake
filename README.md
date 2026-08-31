@@ -77,7 +77,6 @@ services.inventree-compose = {
 ```nix
 services.serviceContainers.instances.inventree = {
   stateVersion = "25.05";
-  docker.enable = true;
   tailscale = { enable = true; permitCertUid = "root"; };   # = certUid for 0.14+
   modules = [ inputs.inventree.nixosModules.default ];
   config.services.inventree-compose = {
@@ -89,12 +88,14 @@ services.serviceContainers.instances.inventree = {
 };
 ```
 
-No `bindMounts` clause: the module is container-aware. It keeps the
-in-container paths (`/var/lib/inventree/data`, `/run/inventree/*`) to itself and
-hands the wrapper the external directories to bind-mount there - the `dataDir`
-host directory and the secret files behind `database.passwordFile` /
-`smtp.passwordFile`. Override `dataDir` to move the host data directory;
-everything else is automatic.
+No `docker.enable`, no `bindMounts`: the module is container-aware. It turns on
+the wrapper's docker-in-nspawn support itself, keeps the in-container paths
+(`/var/lib/inventree/data`, `/run/inventree/*`) to itself, and hands the wrapper
+the external directories to bind-mount there - the `dataDir` host directory and
+the secret files behind `database.passwordFile` / `smtp.passwordFile`. Override
+`dataDir` to move the host data directory; everything else is automatic. (Set
+`docker.dataDir` on the instance if you want docker's own storage somewhere
+other than `/var/lib/service-containers/<name>/docker`.)
 
 ## Secrets
 
