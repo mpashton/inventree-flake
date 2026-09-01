@@ -1,4 +1,49 @@
-# inventree-compose
+# inventree-flake
+
+A flake for [InvenTree](https://inventree.org/) using the official upstream
+Docker Compose stack.
+
+A unique feature of this flake is that you can choose to run any version of
+InvenTree (from a wide selection), and not only the latest packaged release.
+This allows relatively straightforward and well-controlled version upgrades.
+In most cases, versions not in the list are easily added.
+
+It is also easy to run multiple instances of InvenTree on the same server, with
+different versions if desired. (`server-farm` can help with this.)
+
+## plugins
+
+This flake supports installing plugins through the `plugins` options. This works
+by generating the `plugins.txt` file, which on container restart, triggers a
+rebuild of the plugins directory.
+
+Unfortunately, this mechanism is rather fragile, as problems with obtaining,
+building, and installing plugins do not surface until the container is being
+restarted, and manual action is required when changing the plugin list. This
+renders configuration not only inconvenient but effectively impure, even if the
+plugins are version-pinned (as the AI strenuously recommends below). In the
+future, plugins will only be loaded from Nix modules.
+
+For now, observe the following:
+
+1. In Plugin Settings, activate the option "Check plugins on startup".
+
+2. After editing the module list and reinstalling the container, run the
+following as root on the container host:
+
+  rm -rf /srv/inventree/data/env /srv/inventree/data/.nix-plugins.stamp
+  systemctl restart inventree-compose
+
+## todo
+
+- plugin flakes
+- only support plugin flakes / modules
+- more text config, less gui config
+- generate config.yaml
+- automatically set "Check plugins on startup"
+
+
+## ai stuff follows ##
 
 A NixOS module that runs an **InvenTree** instance (releases **0.11 through 1.5**)
 from its upstream production `docker-compose` stack.
