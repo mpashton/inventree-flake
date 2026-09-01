@@ -21,7 +21,7 @@
           # the systemd unit, assertions). Foreign target (Graviton etc.): force
           # option-processing + assertions only - proves the module evaluates
           # there without a foreign builder.
-          evalOn = targetSystem: version:
+          evalOn = targetSystem: version: extra:
             let
               sys = nixpkgs.lib.nixosSystem {
                 system = targetSystem;
@@ -37,7 +37,7 @@
                       inherit version;
                       enable = true;
                       database.passwordFile = "/run/secrets/inventree-db";
-                    };
+                    } // extra;
                   }
                 ];
               };
@@ -62,9 +62,30 @@
         {
           checks = lib.listToAttrs (lib.concatMap
             (target: lib.mapAttrsToList
-              (name: version: { name = "${name}-${target}"; value = evalOn target version; })
+              (name: version: { name = "${name}-${target}"; value = evalOn target version { }; })
               versions)
-            [ "x86_64-linux" "aarch64-linux" ]);
+            [ "x86_64-linux" "aarch64-linux" ])
+          // {
+            # Native-only: forces the toplevel, so the rendered plugins.txt,
+            # the plugin `.env` lines and the `invoke plugins` preStart step
+            # are all built.
+            "eval-plugins-${system}" = evalOn system "1.5.2" {
+              plugins = {
+                external = [ "inventree-brother-plugin" "inventree-bulk-plugin==1.2.3" ];
+                mandatory = [ "inventree-brother" ];
+                extraConfig = { ENABLE_PLUGINS_URL = true; ENABLE_PLUGINS_APP = true; };
+              };
+            };
+            # Pre-1.0 + plugins on the oldest rung: the plugin install wiring
+            # builds on the nginx generation, and both pre-1.0 plugin warnings
+            # (pre-0.12 `invoke plugins`, mandatory-needs-1.x) fire.
+            "eval-plugins-legacy-${system}" = evalOn system "0.11.0" {
+              plugins = {
+                external = [ "inventree-bulk-plugin==1.2.3" ];
+                mandatory = [ "bulk-action" ];
+              };
+            };
+          };
         };
     };
 }

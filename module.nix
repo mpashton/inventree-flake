@@ -34,6 +34,11 @@ let
 
   inventree = {
     composeDir = "/etc/inventree-docker";
+    # Where upstream's compose mounts INVENTREE_EXT_VOLUME inside every
+    # container - fixed by the upstream compose file, independent of the host
+    # path. Container-internal paths (INVENTREE_PLUGIN_DIR, INVENTREE_PY_ENV)
+    # must be expressed relative to this, not `paths.extVolume`.
+    dataMount = "/home/inventree/data";
   };
 
   # ---------------------------------------------------------------------------
@@ -105,6 +110,11 @@ let
   # something else is running in front (caddy.enable = false).
   webPort = if caddyGen && tlsFront then 80 else cfg.port;
 
+  # Rendered pip requirements file for the plugin install step (section below).
+  # One specifier per line; empty unless `cfg.plugins.external` is set.
+  pluginsTxt = pkgs.writeText "inventree-plugins.txt"
+    (lib.concatMapStrings (p: p + "\n") cfg.plugins.external);
+
   # Non-secret half of upstream's docker/production/.env. The DB and SMTP
   # passwords are appended at service-start time from their files - never baked
   # into the store.
@@ -118,7 +128,7 @@ let
     INVENTREE_DB_PORT=5432
     INVENTREE_DB_USER=${cfg.database.user}
     INVENTREE_GUNICORN_TIMEOUT=30
-    INVENTREE_PLUGINS_ENABLED=False
+    INVENTREE_PLUGINS_ENABLED=${if cfg.plugins.enable then "True" else "False"}
     INVENTREE_TAG=${cfg.version}
     COMPOSE_PROJECT_NAME=${cfg.composeProjectName}
   '' + lib.optionalString (!isV1) ''
@@ -136,7 +146,21 @@ let
     INVENTREE_CACHE_ENABLED=True
     INVENTREE_CACHE_HOST=inventree-cache
     INVENTREE_CACHE_PORT=6379
-  '' + (selected.extraEnv or "") + lib.optionalString cfg.enableGoogleLogin ''
+  '' + (selected.extraEnv or "") + lib.optionalString (cfg.plugins.external != [ ]) ''
+    INVENTREE_PY_ENV=${inventree.dataMount}/env
+  '' + lib.optionalString (cfg.plugins.pluginDir != null) ''
+    INVENTREE_PLUGIN_DIR=${inventree.dataMount}/plugins
+  '' + lib.optionalString (cfg.plugins.mandatory != [ ]) ''
+    INVENTREE_PLUGINS_MANDATORY=${lib.concatStringsSep "," cfg.plugins.mandatory}
+  '' + lib.concatStrings (lib.mapAttrsToList
+    (k: v:
+      let
+        key = if lib.hasPrefix "INVENTREE_" k then k else "INVENTREE_${k}";
+        val = if lib.isBool v then (if v then "True" else "False") else v;
+      in
+      "${key}=${val}\n")
+    cfg.plugins.extraConfig)
+  + lib.optionalString cfg.enableGoogleLogin ''
     INVENTREE_SOCIAL_BACKENDS=allauth.socialaccount.providers.google
   '' + lib.optionalString (cfg.smtp.host != "") ''
     INVENTREE_EMAIL_HOST=${cfg.smtp.host}
@@ -272,6 +296,110 @@ in
         database restore from an instance that already had Google login set up.
         This flag only controls whether InvenTree loads the provider app at all.
       '';
+    };
+
+    plugins = {
+      external = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = lib.literalExpression ''
+          [ "inventree-brother-plugin" "inventree-bulk-plugin==1.2.3" ]
+        '';
+        description = ''
+          Third-party InvenTree plugins to install, as pip requirement
+          specifiers - one per line of a generated `plugins.txt`. A bare name, a
+          pinned `name==version`, a `git+https://...@ref` URL or a wheel URL all
+          work.
+
+          **Pin every entry.** The install step runs `pip install -U`, so an
+          unpinned name floats to the latest release on any change to this list.
+
+          When non-empty, the plugin subsystem is switched on
+          ({option}`services.inventree-compose.plugins.enable`) and the unit's
+          `preStart` runs `invoke plugins` (`pip install -r plugins.txt`). The
+          upstream *production* image runs off its baked system site-packages
+          with no persistent virtualenv, so the module sets `INVENTREE_PY_ENV`
+          to a path under {option}`services.inventree-compose.dataDir`; the
+          image builds that venv on the next start and pip-installed plugins
+          then survive restarts. Changing
+          {option}`services.inventree-compose.version` deletes and rebuilds that
+          venv (the image never rebuilds it for a new Python) and reinstalls the
+          plugins.
+
+          This is the one place the module touches live PyPI, and only when
+          this list's rendered content changes or the version moves -
+          steady-state restarts make no network calls. A failed install aborts
+          the unit start (it is retried next boot).
+
+          Installed plugins are registered **inactive**. Activate them in the
+          InvenTree admin UI, or - on 1.x - list their slugs in
+          {option}`services.inventree-compose.plugins.mandatory`. Removing an entry
+          here does not uninstall the package or remove its database row.
+
+          Third-party plugin code runs inside the InvenTree server and worker
+          containers with full access to the instance.
+        '';
+      };
+
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = cfg.plugins.external != [ ] || cfg.plugins.pluginDir != null;
+        defaultText = lib.literalExpression ''
+          config.services.inventree-compose.plugins.external != [ ]
+            || config.services.inventree-compose.plugins.pluginDir != null
+        '';
+        description = ''
+          `INVENTREE_PLUGINS_ENABLED` - the master switch for InvenTree's plugin
+          system. Defaults on whenever {option}`...plugins` or
+          {option}`...pluginDir` is set. Set it `true` by hand to enable the
+          image's optional builtin plugins with no external install, or `false` to
+          keep the system off while a list is temporarily present.
+        '';
+      };
+
+      mandatory = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = lib.literalExpression ''[ "inventree-brother" "bulk-action" ]'';
+        description = ''
+          Plugin **slugs** (not PyPI names) to force active on every start, via
+          `INVENTREE_PLUGINS_MANDATORY`. Such plugins cannot be disabled from the
+          UI. InvenTree **1.x only** - earlier releases ignore the setting (the
+          module warns) and need the plugins activated by hand in the admin UI.
+        '';
+      };
+
+      pluginDir = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          A directory of "local" InvenTree plugins - plain Python packages, no pip
+          metadata required. Its contents are synced into `<dataDir>/plugins` on
+          every start (`rsync --delete`, so the directory is authoritative) and
+          `INVENTREE_PLUGIN_DIR` is pointed at it. A Nix store path works, so a
+          downstream flake can pass a `symlinkJoin` of built plugin sources for a
+          fully offline install. Upstream considers this route unsuitable for
+          production; prefer {option}`...plugins` where a package is on PyPI.
+        '';
+      };
+
+      extraConfig = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.either lib.types.str lib.types.bool);
+        default = { };
+        example = { ENABLE_PLUGINS_URL = true; ENABLE_PLUGINS_APP = true; };
+        description = ''
+          Extra plugin-related settings appended to the generated `.env` as
+          `INVENTREE_<KEY>=<value>` lines (a key already starting `INVENTREE_` is
+          left as-is; booleans render `True`/`False`). Use it for the per-feature
+          master switches some plugins need - `ENABLE_PLUGINS_URL`,
+          `ENABLE_PLUGINS_NAVIGATION`, `ENABLE_PLUGINS_APP`,
+          `ENABLE_PLUGINS_SCHEDULE`, `ENABLE_PLUGINS_EVENTS`,
+          `ENABLE_PLUGINS_INTERFACE`, `ENABLE_PLUGINS_MAILS` - or any other
+          `INVENTREE_*` plugin option. A plugin that adds database models
+          (`ENABLE_PLUGINS_APP`) needs to be active before `invoke migrate` runs,
+          so its first install may take a second `systemctl restart`.
+        '';
+      };
     };
 
     database = {
@@ -421,6 +549,12 @@ in
       }
     ];
 
+    warnings =
+      lib.optional (cfg.plugins != [ ] && !lib.versionAtLeast cfg.version "0.12.0")
+        "services.inventree-compose.plugins is set on ${cfg.version}; the `invoke plugins` task the install relies on may be absent or named differently before 0.12."
+      ++ lib.optional (cfg.plugins.mandatory != [ ] && !lib.versionAtLeast cfg.version "1.0.0")
+        "services.inventree-compose.plugins.mandatory is set on ${cfg.version}; INVENTREE_PLUGINS_MANDATORY is an InvenTree 1.x feature and is ignored on earlier releases - activate those plugins by hand in the admin UI.";
+
     systemd.tmpfiles.rules = [
       # Wide open: the postgres/inventree images use their own internal UIDs which don't map
       # to anything on the host, and it isn't worth chasing exact numbers here. On a
@@ -464,6 +598,16 @@ in
       # slow, and risks drifting package versions on a tag we deliberately pinned).
       # We wait for postgres to actually accept connections first, since `depends_on` only
       # waits for the container to start, not for it to be ready.
+      #
+      # `cfg.plugins.external` is the one deliberate exception to the
+      # no-`invoke install` rule: when set, we point INVENTREE_PY_ENV at a venv
+      # on the data volume (the production image keeps none), render
+      # `plugins.txt`, and run `invoke plugins` (`pip install -r plugins.txt`)
+      # into that venv - but only when the rendered file's content changes
+      # (guarded by a stamp holding its store path), so a steady-state restart
+      # still makes no PyPI call. A version change wipes the venv + stamp first.
+      # Ordered before `migrate` so plugin-supplied migrations are applied,
+      # matching `invoke update`.
       preStart = ''
         set -o errexit
         install -m 600 ${envTemplate} ${inventree.composeDir}/.env
@@ -483,7 +627,32 @@ in
         docker rm -f inventree-db inventree-cache inventree-server inventree-worker inventree-proxy 2>/dev/null || true
 
         docker-compose ${composeFileArgs} up -d inventree-db
+      '' + lib.optionalString (cfg.plugins.external != [ ]) ''
+        # The upstream *production* image sets no INVENTREE_PY_ENV, so it runs
+        # straight off the image's system site-packages - a plugin pip-installed
+        # in one `run --rm` container is gone from the next, and from the real
+        # server. We point INVENTREE_PY_ENV (in .env) at a path on the data
+        # volume; the image's init.sh builds that venv `--system-site-packages`
+        # on the next start, and it then persists. init.sh does *not* rebuild it
+        # when the image's Python / InvenTree version moves, so drop it (and
+        # force a plugin reinstall) whenever the pinned version changes.
+        if [ "$(cat ${paths.extVolume}/.nix-inventree-version 2>/dev/null)" != "${cfg.version}" ]; then
+          rm -rf ${paths.extVolume}/env ${paths.extVolume}/.nix-plugins.stamp
+          printf '%s' "${cfg.version}" > ${paths.extVolume}/.nix-inventree-version
+        fi
+      '' + ''
         docker-compose ${composeFileArgs} run --rm inventree-server invoke wait
+      '' + lib.optionalString (cfg.plugins.pluginDir != null) ''
+        mkdir -p ${paths.extVolume}/plugins
+        ${pkgs.rsync}/bin/rsync -a --delete ${cfg.plugins.pluginDir}/ ${paths.extVolume}/plugins/
+      '' + lib.optionalString (cfg.plugins.external != [ ]) ''
+        stamp=${paths.extVolume}/.nix-plugins.stamp
+        if [ ! -e "$stamp" ] || [ "$(cat "$stamp")" != "${pluginsTxt}" ]; then
+          install -m 644 ${pluginsTxt} ${paths.extVolume}/plugins.txt
+          docker-compose ${composeFileArgs} run --rm inventree-server invoke plugins
+          printf '%s' "${pluginsTxt}" > "$stamp"
+        fi
+      '' + ''
         docker-compose ${composeFileArgs} run --rm inventree-server invoke migrate
         docker-compose ${composeFileArgs} run --rm inventree-server invoke static
       '';

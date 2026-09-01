@@ -32,10 +32,11 @@ Upstream's production compose stack, verbatim for the chosen tag:
 - the stack's own reverse proxy / static+media server
 
 driven by a `systemd` unit (`inventree-compose.service`) that renders the
-`.env`, runs `invoke wait`/`migrate`/`static`, and `docker compose up`s the
-stack. Requires `virtualisation.docker` (the module enables it by default). All
-InvenTree state (database, media, static, secret key) lives under `dataDir`
-(`INVENTREE_EXT_VOLUME`).
+`.env` (and, when `plugins` is set, a `plugins.txt`), runs
+`invoke wait`/`migrate`/`static`, and `docker compose up`s the stack. Requires
+`virtualisation.docker` (the module enables it by default). All InvenTree state
+(database, media, static, secret key, and the plugin virtualenv) lives under
+`dataDir` (`INVENTREE_EXT_VOLUME`).
 
 ### Two proxy generations
 
@@ -104,6 +105,67 @@ never copied into the store. On a bare host they are used as given. Inside a
 `service-container` the module treats them as **host** paths and asks the
 wrapper to bind-mount each onto a fixed in-container path, so the same option
 value works in either mode.
+
+## Plugins
+
+```nix
+services.inventree-compose.plugins = {
+  external = [
+    "inventree-brother-plugin"
+    "inventree-bulk-plugin==1.2.3"
+    "git+https://github.com/example/inventree-foo@v0.4.0"
+  ];
+  mandatory = [ "inventree-brother" ];              # slugs; 1.x only
+  extraConfig = { ENABLE_PLUGINS_URL = true; };     # per-feature switches
+};
+```
+
+`plugins.external` is a list of **pip requirement specifiers** - a bare name, a
+pinned `name==version`, a `git+https://…@ref` URL, or a wheel URL. They are
+written to `<dataDir>/plugins.txt`; when the list is non-empty the module sets
+`INVENTREE_PLUGINS_ENABLED=True` and the unit's `preStart` runs `invoke plugins`
+(`pip install -r plugins.txt`).
+
+- **Persistent venv.** The upstream *production* image has no virtualenv - it
+  runs off its baked system packages, so anything pip-installed into a
+  short-lived task container is lost. When `plugins.external` is set the module
+  points `INVENTREE_PY_ENV` at `<dataDir>/env`; the image builds that venv
+  (`--system-site-packages`, so InvenTree's own deps still resolve) on the next
+  start and the plugins then survive restarts. Changing `version` deletes and
+  rebuilds the venv - the image never rebuilds it for a new Python - and
+  reinstalls the plugins.
+- **Pin every entry.** The install runs `pip install -U`, so an unpinned name
+  floats to the newest release whenever the list changes.
+- **This is the one place the module touches live PyPI**, and only when the
+  rendered `plugins.txt` changes or `version` moves - a stamp file in `dataDir`
+  records the last applied content, so steady-state restarts make no network
+  calls. External plugins therefore need no module support: publish the repo and
+  add its `git+https://…@tag` specifier.
+- A failed install **aborts the unit start** (no `|| true`); it is retried on the
+  next boot. A transient PyPI/git outage will block a restart while the list has
+  unapplied changes.
+- Installed plugins are registered **inactive**. Activate them in the InvenTree
+  admin UI (Settings → Plugins), or - on **1.x** - put their slugs in
+  `plugins.mandatory` (`INVENTREE_PLUGINS_MANDATORY`), which force-activates them
+  and blocks disabling from the UI. Pre-1.0 releases ignore the setting (the
+  module warns but still evaluates) - activate plugins by hand there.
+- Removing an entry from `plugins.external` does **not** uninstall the package or
+  delete its `PluginConfig` row - pip never prunes.
+- Some plugin capabilities need a per-feature master switch
+  (`ENABLE_PLUGINS_URL`, `…_NAVIGATION`, `…_APP`, `…_SCHEDULE`, `…_EVENTS`,
+  `…_INTERFACE`, `…_MAILS`); set them through `plugins.extraConfig`. A plugin
+  that adds database models (`ENABLE_PLUGINS_APP`) must be active before
+  `invoke migrate` runs, so its first install may need a second
+  `systemctl restart`.
+- Third-party plugin code runs inside the InvenTree server and worker containers
+  with full access to the instance - vet what you add.
+
+`plugins.pluginDir` is an offline alternative: point it at a directory of plain
+plugin packages (a Nix store path works, so a downstream flake can hand over a
+`symlinkJoin` of built plugin sources). Its contents are `rsync --delete`d into
+`<dataDir>/plugins` on every start and `INVENTREE_PLUGIN_DIR` is set. Upstream
+considers this route unsuitable for production - prefer `plugins.external` for
+anything on PyPI.
 
 ## Versions & upgrades
 
