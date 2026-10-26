@@ -1,46 +1,42 @@
-# inventree-flake
+# inventree-nix
 
-A flake for [InvenTree](https://inventree.org/) using the official upstream
-Docker Compose stack.
+This is a flake for [InvenTree](https://inventree.org/) using the official
+upstream Docker Compose stack.
 
-A unique feature of this flake is that you can choose to run any version of
-InvenTree (from a wide selection), and not only the latest packaged release.
-This allows relatively straightforward and well-controlled version upgrades.
-In most cases, versions not in the list are easily added.
+A unique feature of this flake is that it can install any of a selection of
+versions of InvenTree. This enables straightforward and well-controlled
+upgrades. The latest patchlevel of each minor version is included, and in most
+cases, versions not in the list are easily added.
 
-It is also easy to run multiple instances of InvenTree on the same server, with
-different versions if desired. (`server-farm` can help with this.)
+Plugins are fully supported, and configured from Nix.  The major Inventree plugins 
+are supported directly in this flake.  Installing plugins from source is also 
+supported.
 
-## plugins
+Using this flake, it is straightforward to run multiple instances of InvenTree
+on the same server, with different versions if desired. (See `ctrnet` for a
+flake which can help with this.)
 
-This flake supports installing plugins through the `plugins` options. This works
-by generating the `plugins.txt` file, which on container restart, triggers a
-rebuild of the plugins directory.
+## Plugins
 
-Unfortunately, this mechanism is rather fragile, as problems with obtaining,
-building, and installing plugins do not surface until the container is being
-restarted, and manual action is required when changing the plugin list. This
-renders configuration not only inconvenient but effectively impure, even if the
-plugins are version-pinned (as the AI strenuously recommends below). In the
-future, plugins will only be loaded from Nix modules.
+Plugins can be installed by listing them in
+`services.inventree.plugins.packages`. This flake includes a set of the most
+commonly used Inventree plugins, in the `plugins/` directory.
 
-For now, observe the following:
+You can also install a plugin by pointing to its directory using the `path` 
 
-1. In Plugin Settings, activate the option "Check plugins on startup".
+## Configuration
 
-2. After editing the module list and reinstalling the container, run the
-following as root on the container host:
+This flake uses the `services.inventree` option set, so it cannot be installed
+at the same time as the Nixpkgs Inventree package. To run both on one system, put at least
+one of them in a container (which you would need to do anyway).
 
-  rm -rf /srv/inventree/data/env /srv/inventree/data/.nix-plugins.stamp
-  systemctl restart inventree-compose
 
 ## todo
 
-- plugin flakes
-- only support plugin flakes / modules
 - more text config, less gui config
 - generate config.yaml
 - automatically set "Check plugins on startup"
+- packaged plugins for the external plugins in use (`plugins/`)
 
 
 ## ai stuff follows ##
@@ -66,6 +62,17 @@ Keep the instance **off the public internet** - reach it over a tailnet or a
 private network. For 0.14+ the stack's bundled Caddy expects to serve a
 `*.ts.net` MagicDNS name and fetch that certificate from a local `tailscaled`.
 
+## plugins
+
+Plugins are installed through `services.inventree.plugins.packages`: a
+list of Nix-packaged plugins (from plugin flakes or modules, from the in-tree
+`plugins/` collection, or a live local directory for development). They are
+linked into InvenTree's custom plugin directory from the Nix store - no pip, no
+network at start, and a bad plugin fails at build time rather than at container
+restart. See [Plugins](#plugins-1) below.
+
+In Plugin Settings, activate the option "Check plugins on startup".
+
 ## What it builds
 
 Upstream's production compose stack, verbatim for the chosen tag:
@@ -76,11 +83,11 @@ Upstream's production compose stack, verbatim for the chosen tag:
 - redis cache (1.x; profile-disabled on 0.x)
 - the stack's own reverse proxy / static+media server
 
-driven by a `systemd` unit (`inventree-compose.service`) that renders the
-`.env` (and, when `plugins` is set, a `plugins.txt`), runs
+driven by a `systemd` unit (`inventree.service`) that renders the
+`.env`, runs
 `invoke wait`/`migrate`/`static`, and `docker compose up`s the stack. Requires
 `virtualisation.docker` (the module enables it by default). All InvenTree state
-(database, media, static, secret key, and the plugin virtualenv) lives under
+(database, media, static, secret key) lives under
 `dataDir` (`INVENTREE_EXT_VOLUME`).
 
 ### Two proxy generations
@@ -109,23 +116,23 @@ change: a pinned `postgres` image (when `database.image` is set) and the
 imports = [ inputs.inventree.nixosModules.default ];
 age.secrets.inventree-db.file = ./secrets/inventree-db.age;
 
-services.inventree-compose = {
+services.inventree = {
   enable = true;
   version = "1.5.2";
   virtualHost = "inventree.tailnet-xxxx.ts.net";   # your MagicDNS name
   database.passwordFile = config.age.secrets.inventree-db.path;
 };
-# plus: a tailscaled on this host that permits `config.services.inventree-compose.certUid`.
+# plus: a tailscaled on this host that permits `config.services.inventree.certUid`.
 ```
 
 ### In a service-container
 
 ```nix
-services.serviceContainers.instances.inventree = {
+services.ctrnet.instances.inventree = {
   stateVersion = "25.05";
   tailscale = { enable = true; permitCertUid = "root"; };   # = certUid for 0.14+
   modules = [ inputs.inventree.nixosModules.default ];
-  config.services.inventree-compose = {
+  config.services.inventree = {
     enable = true;
     version = "1.5.2";
     dataDir = "/srv/inventree/data";
@@ -154,63 +161,120 @@ value works in either mode.
 ## Plugins
 
 ```nix
-services.inventree-compose.plugins = {
-  external = [
-    "inventree-brother-plugin"
-    "inventree-bulk-plugin==1.2.3"
-    "git+https://github.com/example/inventree-foo@v0.4.0"
+services.inventree.plugins = {
+  packages = [
+    pkgs.inventreePlugins.bulk-action                    # in-tree collection (plugins/)
+    inputs.my-plugin.packages.${system}.default          # a plugin flake
+    { path = "/home/me/src/wip-plugin/wip_plugin"; }     # development: live host dir
   ];
-  mandatory = [ "inventree-brother" ];              # slugs; 1.x only
+  mandatory = [ "bulk-action" ];                    # slugs; 1.x only
   extraConfig = { ENABLE_PLUGINS_URL = true; };     # per-feature switches
 };
 ```
 
-`plugins.external` is a list of **pip requirement specifiers** - a bare name, a
-pinned `name==version`, a `git+https://…@ref` URL, or a wheel URL. They are
-written to `<dataDir>/plugins.txt`; when the list is non-empty the module sets
-`INVENTREE_PLUGINS_ENABLED=True` and the unit's `preStart` runs `invoke plugins`
-(`pip install -r plugins.txt`).
+Every plugin is installed in InvenTree's **custom plugin directory**
+(`INVENTREE_PLUGIN_DIR`). That directory is a Nix store `linkFarm` built from
+`plugins.packages`: one symlink per entry, pointing at the plugin in the store.
+The link targets are bind-mounted read-only, at the same paths, into the server
+and worker containers (via the generated compose override) so the symlinks
+resolve there. Nothing is pip-installed, nothing touches the network at start,
+and nothing is written to `dataDir`; a broken plugin fails at build time.
+`enablePlugins` (`INVENTREE_PLUGINS_ENABLED`) defaults on when the list is
+non-empty.
 
-- **Persistent venv.** The upstream *production* image has no virtualenv - it
-  runs off its baked system packages, so anything pip-installed into a
-  short-lived task container is lost. When `plugins.external` is set the module
-  points `INVENTREE_PY_ENV` at `<dataDir>/env`; the image builds that venv
-  (`--system-site-packages`, so InvenTree's own deps still resolve) on the next
-  start and the plugins then survive restarts. Changing `version` deletes and
-  rebuilds the venv - the image never rebuilds it for a new Python - and
-  reinstalls the plugins.
-- **Pin every entry.** The install runs `pip install -U`, so an unpinned name
-  floats to the newest release whenever the list changes.
-- **This is the one place the module touches live PyPI**, and only when the
-  rendered `plugins.txt` changes or `version` moves - a stamp file in `dataDir`
-  records the last applied content, so steady-state restarts make no network
-  calls. External plugins therefore need no module support: publish the repo and
-  add its `git+https://…@tag` specifier.
-- A failed install **aborts the unit start** (no `|| true`); it is retried on the
-  next boot. A transient PyPI/git outage will block a restart while the list has
-  unapplied changes.
+### Writing a plugin
+
+A plugin is a derivation with a fixed layout:
+
+```
+$out/<module>/                              # the plugin's Python package (or <module>.py)
+passthru.inventreePlugin.module = "<module>";
+```
+
+That is the whole contract, so a plugin flake need not depend on this one.
+`inventree.lib.mkPlugin pkgs { pname; version; src; module; srcRoot ? module;
+slug; inventreeVersions ? null; pluginConfigs ? { }; }` is optional sugar for it
+(`srcRoot` is the path inside the source to install as `module`, e.g.
+`"src/my_plugin"`; `slug` is the plugin's InvenTree `SLUG`, used to activate it;
+`inventreeVersions = { min = "1.0.0"; }` makes the module warn on a mismatched
+`version`).
+
+`pluginConfigs` lists settings the plugin needs in the instance environment,
+e.g. `{ ENABLE_PLUGINS_EVENTS = true; }` (string or bool values). The module
+merges them into `services.inventree.pluginConfigs`, so a consumer need not
+repeat them. Settings that agree merge silently (`ENABLE_PLUGINS_URL = true` and
+`INVENTREE_ENABLE_PLUGINS_URL = "True"` are the same setting); a key that two
+plugins - or a plugin and your own `pluginConfigs` - set to *different* values
+fails the build with a message naming the key, both values and their sources.
+
+A plugin flake exports the package plus a module that adds it:
+
+```nix
+outputs = { self, nixpkgs, inventree }: {
+  packages.x86_64-linux.default = inventree.lib.mkPlugin nixpkgs.legacyPackages.x86_64-linux {
+    pname = "inventree-foo"; version = "1.2.3"; src = ./.; module = "foo";
+  };
+  nixosModules.default = { pkgs, ... }: {
+    services.inventree.plugins = {
+      packages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+      mandatory = [ "foo" ];
+      extraConfig.ENABLE_PLUGINS_URL = true;
+    };
+  };
+};
+```
+
+Consumers `imports = [ foo.nixosModules.default ]`; `packages` is a list option,
+so entries from several modules merge.
+
+### Many plugins, one repo
+
+`plugins/<name>/default.nix` is auto-discovered (like the `<tag>/` version
+directories) and exposed as `pkgs.inventreePlugins.<name>` (this flake's overlay,
+applied by the module) and `legacyPackages.<system>.inventreePlugins.<name>`:
+
+```nix
+# plugins/bulk-action/default.nix
+{ mkPlugin, fetchFromGitHub }:
+mkPlugin {
+  pname = "inventree-bulk-action"; version = "1.2.3"; module = "bulk_action";
+  src = fetchFromGitHub { owner = "..."; repo = "..."; rev = "v1.2.3"; hash = "sha256-..."; };
+}
+```
+
+Adding a plugin means adding one hash-pinned directory; no repo per plugin.
+
+### Developing a plugin
+
+- `{ path = "/abs/dir"; }` links a live host directory (a *string*, so it is not
+  copied to the store) under its basename and mounts it read-only. Edits take
+  effect on the next `systemctl restart inventree`. Inside a
+  `service-container` the path is also bind-mounted into the guest. The path
+  must exist: a missing one fails the start rather than being created.
+- To test a plugin flake before pushing:
+  `nixos-rebuild switch --override-input myplugin path:$HOME/src/myplugin`.
+
+### Notes
+
+- **No dependency resolution.** A plugin can only import what the InvenTree
+  image already ships; there is no pip step.
 - Installed plugins are registered **inactive**. Activate them in the InvenTree
   admin UI (Settings → Plugins), or - on **1.x** - put their slugs in
   `plugins.mandatory` (`INVENTREE_PLUGINS_MANDATORY`), which force-activates them
   and blocks disabling from the UI. Pre-1.0 releases ignore the setting (the
   module warns but still evaluates) - activate plugins by hand there.
-- Removing an entry from `plugins.external` does **not** uninstall the package or
-  delete its `PluginConfig` row - pip never prunes.
+- Removing an entry does **not** delete its `PluginConfig` row.
 - Some plugin capabilities need a per-feature master switch
   (`ENABLE_PLUGINS_URL`, `…_NAVIGATION`, `…_APP`, `…_SCHEDULE`, `…_EVENTS`,
-  `…_INTERFACE`, `…_MAILS`); set them through `plugins.extraConfig`. A plugin
+  `…_INTERFACE`, `…_MAILS`); packaged plugins declare the ones they need
+  themselves (see above), and you can set more through `pluginConfigs`. A plugin
   that adds database models (`ENABLE_PLUGINS_APP`) must be active before
   `invoke migrate` runs, so its first install may need a second
   `systemctl restart`.
+- Upstream considers a custom plugin directory unsuitable for production; the
+  concern is reproducibility, which store pinning addresses.
 - Third-party plugin code runs inside the InvenTree server and worker containers
   with full access to the instance - vet what you add.
-
-`plugins.pluginDir` is an offline alternative: point it at a directory of plain
-plugin packages (a Nix store path works, so a downstream flake can hand over a
-`symlinkJoin` of built plugin sources). Its contents are `rsync --delete`d into
-`<dataDir>/plugins` on every start and `INVENTREE_PLUGIN_DIR` is set. Upstream
-considers this route unsuitable for production - prefer `plugins.external` for
-anything on PyPI.
 
 ## Versions & upgrades
 
@@ -262,8 +326,8 @@ docker compose run --rm inventree-server python InvenTree/manage.py migrate comm
 docker compose run --rm inventree-server invoke migrate
 ```
 
-then `systemctl start inventree-compose`.
+then `systemctl start inventree`.
 
 ## Options
 
-See the `options.services.inventree-compose` block in [`module.nix`](./module.nix).
+See the `options.services.inventree` block in [`module.nix`](./module.nix).
