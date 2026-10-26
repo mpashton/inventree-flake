@@ -247,7 +247,10 @@ Adding a plugin means adding one hash-pinned directory; no repo per plugin.
 ### Developing a plugin
 
 - `{ path = "/abs/dir"; }` links a live host directory (a *string*, so it is not
-  copied to the store) under its basename and mounts it read-only. Edits take
+  copied to the store) under its basename and mounts it read-only at
+  `/opt/inventree-dev-plugins/<basename>` in the containers (never under
+  `/home`: the image's `init.sh` globs `/home/*` and fails if there is more than
+  one entry). Edits take
   effect on the next `systemctl restart inventree`. Inside a
   `service-container` the path is also bind-mounted into the guest. The path
   must exist: a missing one fails the start rather than being created.

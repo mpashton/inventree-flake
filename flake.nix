@@ -152,9 +152,13 @@
               pkgs.runCommand "inventree-plugin-dir-check" { } ''
                 test "$(readlink ${dir}/fixture_plugin)" = "${fixturePlugin}/fixture_plugin"
                 test -f ${dir}/fixture_plugin/__init__.py
-                test "$(readlink ${dir}/wip_plugin)" = "/srv/dev-plugin/wip_plugin"
+                # Dev paths are mounted at a fixed root, not at their host path
+                # (a /home/<user> mount breaks upstream's init.sh glob).
+                test "$(readlink ${dir}/wip_plugin)" = "/opt/inventree-dev-plugins/wip_plugin"
                 grep -qF '"${dir}"' ${pkgs.writeText "override.yml" override}
-                grep -qF '"/srv/dev-plugin/wip_plugin"' ${pkgs.writeText "override.yml" override}
+                grep -qF 'source: "/srv/dev-plugin/wip_plugin"' ${pkgs.writeText "override.yml" override}
+                grep -qF 'target: "/opt/inventree-dev-plugins/wip_plugin"' ${pkgs.writeText "override.yml" override}
+                ! grep -qF 'target: "/srv/' ${pkgs.writeText "override.yml" override}
                 touch $out
               '';
 
