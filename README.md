@@ -41,7 +41,7 @@ one of them in a container (which you would need to do anyway).
 
 ## ai stuff follows ##
 
-A NixOS module that runs an **InvenTree** instance (releases **0.11 through 1.5**)
+A NixOS module that runs an **InvenTree** instance (releases **0.11 through 1.6**)
 from its upstream production `docker-compose` stack.
 
 It configures *just the stack* on whatever NixOS system imports it - **directly on
@@ -118,7 +118,7 @@ age.secrets.inventree-db.file = ./secrets/inventree-db.age;
 
 services.inventree = {
   enable = true;
-  version = "1.5.2";
+  version = "1.6.1";
   virtualHost = "inventree.tailnet-xxxx.ts.net";   # your MagicDNS name
   database.passwordFile = config.age.secrets.inventree-db.path;
 };
@@ -134,7 +134,7 @@ services.ctrnet.instances.inventree = {
   modules = [ inputs.inventree.nixosModules.default ];
   config.services.inventree = {
     enable = true;
-    version = "1.5.2";
+    version = "1.6.1";
     dataDir = "/srv/inventree/data";
     database.passwordFile = config.age.secrets."inventree-db".path;
   };
@@ -308,7 +308,7 @@ so this is a dump/restore, not a transparent bump:
    on your existing 13 cluster). Verify.
 2. Follow <https://inventree.org/blog/2026/02/12/db-update>: `pg_dump` the 13
    cluster, move the old `pgdb` dir aside, set `database.image = "postgres:17"`
-   (or `null`), restore into the fresh 17 cluster, then climb 1.2 -> 1.5.
+   (or `null`), restore into the fresh 17 cluster, then climb 1.2 -> 1.6.
 
 The module refuses to evaluate a `1.2`+ version while `database.image` points at
 a `:13` tag.

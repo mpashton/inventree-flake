@@ -242,7 +242,7 @@ in
 
   options.services.inventree = {
     enable = lib.mkEnableOption ''
-      an InvenTree instance (releases 0.11 through 1.5) running its upstream
+      an InvenTree instance (releases 0.11 through 1.6) running its upstream
       production docker-compose stack. Wrap it in a container yourself (e.g.
       services.ctrnet) or run it straight on the host
     '';
@@ -384,7 +384,7 @@ in
               `$out/<module>` holds its Python
               package (or a single `<module>.py`) and
               `passthru.inventreePlugin.module` names it. Build one with
-              inventree-flake's `lib.mkPlugin`, or by hand. Exactly one of
+              inventree-nix's `lib.mkPlugin`, or by hand. Exactly one of
               `package` and `path` must be set.
             '';
           };
