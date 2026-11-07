@@ -1,35 +1,22 @@
-# inventree-nix
+# inventree-flake
 
-This is a flake for [InvenTree](https://inventree.org/) using the official
-upstream Docker Compose stack.
+This is a flake for [InvenTree](https://inventree.org/) using the official upstream Docker Compose stack.
 
-A unique feature of this flake is that it can install any of a selection of
-versions of InvenTree. This enables straightforward and well-controlled
-upgrades. The latest patchlevel of each minor version is included, and in most
-cases, versions not in the list are easily added.
+A unique feature of this flake is that it can install any of a selection of versions of InvenTree. This enables straightforward and well-controlled upgrades. The latest patchlevel of each minor version is included, and in most cases, versions not in the list are easily added.
 
-Plugins are fully supported, and configured from Nix.  The major Inventree plugins 
-are supported directly in this flake.  Installing plugins from source is also 
-supported.
+Plugins are fully supported, and configured from Nix.  The major Inventree plugins are supported directly in this flake.  Installing plugins from source is also supported.
 
-Using this flake, it is straightforward to run multiple instances of InvenTree
-on the same server, with different versions if desired. (See `ctrnet` for a
-flake which can help with this.)
+Using this flake, it is straightforward to run multiple instances of InvenTree on the same server, with different versions if desired. (See `ctrnet` for a flake which can help with this.)
 
 ## Plugins
 
-Plugins can be installed by listing them in
-`services.inventree.plugins.packages`. This flake includes a set of the most
-commonly used Inventree plugins, in the `plugins/` directory.
+Plugins can be installed by listing them in `services.inventree.plugins.packages`. This flake includes a set of the most commonly used Inventree plugins, in the `plugins/` directory.
 
-You can also install a plugin by pointing to its directory using the `path` 
+You can also install a plugin by pointing to its directory using the `path` parameter.
 
 ## Configuration
 
-This flake uses the `services.inventree` option set, so it cannot be installed
-at the same time as the Nixpkgs Inventree package. To run both on one system, put at least
-one of them in a container (which you would need to do anyway).
-
+This flake uses the `services.inventree` option set, so it cannot be installed at the same time as the Nixpkgs Inventree package. To run both on one system, put at least one of them in a container (which you would need to do anyway).
 
 ## todo
 
