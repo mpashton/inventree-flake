@@ -102,7 +102,7 @@
             eval-nginx = "0.13.6"; # pre-0.14 nginx generation
             eval-caddy = "0.17.14"; # 0.14-0.17 bundled-Caddy generation
             eval-v1 = "1.1.12"; # 1.0/1.1 (last on postgres:13)
-            eval-v1-latest = "1.6.1"; # newest 1.x (renamed port vars, redis, postgres:17)
+            eval-v1-latest = "1.7.0"; # newest 1.x (renamed port vars, redis, postgres:17)
           };
         in
         {
@@ -116,7 +116,7 @@
           // {
             # Native-only: forces the toplevel, so the plugin `.env` line and
             # the compose override mounts are all built.
-            "eval-plugins-${system}" = evalOn system "1.6.1" pluginFixtures;
+            "eval-plugins-${system}" = evalOn system versions.eval-v1-latest pluginFixtures;
             # Pre-1.0 + plugins on the oldest rung: the plugin wiring builds on
             # the nginx generation, and the active-needs-1.x warning fires.
             "eval-plugins-legacy-${system}" = evalOn system "0.11.0" pluginFixtures;
@@ -126,7 +126,7 @@
             "plugin-ipn-generator-${system}" =
               let
                 ipn = inventreePlugins.ipn-generator;
-                sys = mkSys system "1.6.1" {
+                sys = mkSys system versions.eval-v1-latest {
                   plugins.ipn-generator.package = ipn;
                 };
                 dir = sys.config.services.inventree.pluginDir;
@@ -145,7 +145,7 @@
             # and the compose override mounts.
             "plugin-dir-${system}" =
               let
-                sys = mkSys system "1.6.1" pluginFixtures;
+                sys = mkSys system versions.eval-v1-latest pluginFixtures;
                 dir = sys.config.services.inventree.pluginDir;
                 override = sys.config.environment.etc."inventree-docker/docker-compose.override.yml".text;
               in
@@ -166,7 +166,7 @@
             # (read from the rendered inventree.env the unit's preStart installs).
             "plugin-active-${system}" =
               let
-                sys = mkSys system "1.6.1" pluginFixtures;
+                sys = mkSys system versions.eval-v1-latest pluginFixtures;
                 preStart = sys.config.systemd.services.inventree.preStart;
               in
               pkgs.runCommand "inventree-plugin-active-check" { } ''
@@ -188,7 +188,7 @@
               let
                 failedWith = extra:
                   map (a: a.message) (lib.filter (a: !a.assertion)
-                    (mkSys system "1.6.1" extra).config.assertions);
+                    (mkSys system versions.eval-v1-latest extra).config.assertions);
                 failed = plugins: failedWith { inherit plugins; };
                 bothSet = failed { x = { package = fixturePlugin; path = "/srv/x"; }; };
                 neither = failed { x = { }; };
