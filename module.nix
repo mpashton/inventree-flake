@@ -1,24 +1,17 @@
-# The InvenTree stack: InvenTree's upstream production docker-compose files,
-# driven by a systemd unit, with a small NixOS Caddy in front for the pre-0.14
-# ("nginx") generation.
+# Nix flake for InvenTree inventory management system
 #
-# This module configures the stack on whatever NixOS system imports it - a host
-# directly (Docker only), or the inner system of a container. It does *not* do
-# any nspawn / VM wrapping and does *not* join a tailnet: hand
-# `services.ctrnet.<name>.modules = [ this ]` (or your own container /
-# host config) the containerisation and Tailscale. When `caddy.enable`, the
-# stack's TLS front needs a reachable `tailscaled` that permits
-# {option}`services.inventree.certUid` to fetch the `*.ts.net` cert.
+# - Uses the Inventree upstream Docker Compose
+# - Allows selecting from a list of InvenTree releases
+# - Optionally set up Caddy for recent versions, or nginx for a few very old versions
+# - Automatically adapts to running in a ctrnet instance
+
 { config, lib, pkgs, options, ... }:
 
 let
   cfg = config.services.inventree;
 
-  # A `service-container` wrapper declares `options.serviceContainer.bindMounts`;
-  # its presence means we're the inner system of one. Then we use fixed
-  # in-container paths and hand the wrapper the host directories to bind-mount
-  # there. On a bare host we use the operator's `dataDir` / `*File` paths as-is.
-  containerised = options ? serviceContainer;
+  # Detect whether we are running in `ctrnet`.
+  containerised = options ? ctrnet;
 
   paths =
     if containerised then {
@@ -77,7 +70,7 @@ let
 
   # Plugins (`plugins`, an attrset of submodules). Each is either a
   # plugin derivation (`package`: `$out/<module>` + `passthru.inventreePlugin.module`,
-  # see lib/mk-plugin.nix) or a dev directory (`path`). The custom plugin
+  # see inventree-plugin.nix) or a dev directory (`path`). The custom plugin
   # directory is a store `linkFarm` with one symlink per entry, so the
   # containers need every link *target* visible at the same path - see
   # `pluginMounts`. Built tolerantly: a malformed entry (neither / both of
@@ -87,7 +80,7 @@ let
       if p.package != null then
         let
           m = p.package.passthru.inventreePlugin.module or (throw
-            "services.inventree.plugins.${label}: ${p.package.name} has no `passthru.inventreePlugin.module` - build it with inventree-flake's `lib.mkPlugin`, or set that attribute and install the plugin to $out/<module>.");
+            "services.inventree.plugins.${label}: ${p.package.name} has no `passthru.inventreePlugin.module` - build it with inventree-flake's `lib.inventreePlugin`, or set that attribute and install the plugin to $out/<module>.");
         in
         { inherit label; name = m; target = "${p.package}/${m}"; mount = "${p.package}"; mountAt = "${p.package}"; dev = false; drv = p.package; inherit (p) slug active; }
       else if p.path != null then
@@ -256,51 +249,27 @@ in
   disabledModules = [ "services/misc/inventree.nix" ];
 
   options.services.inventree = {
-    enable = lib.mkEnableOption ''
-      an InvenTree instance (releases 0.11 through 1.6) running its upstream
-      production docker-compose stack. Wrap it in a container yourself (e.g.
-      services.ctrnet) or run it straight on the host
-    '';
+    enable = lib.mkEnableOption ''Whether to enable InvenTree.'';
 
     version = lib.mkOption {
       type = lib.types.enum (lib.attrNames versions);
       default = "0.17.14";
-      description = ''
-        Which InvenTree release to run. Two proxy generations are offered:
-        0.11-0.13 (the stack ships nginx; this module fronts it with a NixOS
-        Caddy) and 0.14 onward (the stack ships its own Caddy). 0.17.14 is the
-        last release before the 1.0 rewrite; 1.1.12 is the last that runs on a
-        `postgres:13` cluster (1.2+ needs PostgreSQL 14+ - see
-        {option}`services.inventree.database.image`).
+      description = ''InvenTree release to be installed.  Must be one of the directory names under `version/`.
 
-        Raising this is an in-place upgrade against the shared
-        {option}`services.inventree.dataDir` database - schema
-        migrations run automatically on every start. Downgrades are not
-        supported. Releases up to 0.17 are past upstream security support and
-        must stay off the public internet; 1.x is current.
-      '';
+        Inventree does not support downgrades, so be sure to make a backup before changing this.'';
     };
 
     hostname = lib.mkOption {
       type = lib.types.str;
       default = "inventree";
-      description = ''
-        Short name for this instance - the default source for
-        {option}`services.inventree.virtualHost` and
-        {option}`services.inventree.composeProjectName`.
-      '';
+      description = ''Hostname for the site, without domain.'';
     };
 
     virtualHost = lib.mkOption {
       type = lib.types.str;
       default = cfg.hostname;
       defaultText = lib.literalExpression "config.services.inventree.hostname";
-      description = ''
-        Host name InvenTree is reached at. For 0.11-0.13 it is the NixOS Caddy's
-        vhost; for 0.14 onward it is the host part of
-        {option}`services.inventree.siteUrl`. Set it to the
-        fully-qualified name users type (e.g. the `<host>.<tailnet>.ts.net`
-        MagicDNS name).
+      description = ''Virtual hostname for the site.
       '';
     };
 
@@ -308,13 +277,7 @@ in
       type = lib.types.str;
       default = "https://${cfg.virtualHost}";
       defaultText = lib.literalExpression ''"https://" + config.services.inventree.virtualHost'';
-      description = ''
-        `INVENTREE_SITE_URL` - the canonical externally-visible URL. Used from
-        the 0.14 (Caddy) generation on: it is the bundled Caddy's site address
-        (an `https://<name>.ts.net` value makes Caddy fetch the tailnet
-        certificate automatically), and InvenTree derives its CSRF trusted
-        origins from it - mandatory from 0.16, the server refuses to start
-        without it. Ignored by the 0.11-0.13 (nginx) generation.
+      description = ''Virtual URL for the site.  Normally no need to change this.
       '';
     };
 
@@ -322,12 +285,7 @@ in
       allowAll = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = ''
-          `INVENTREE_CORS_ORIGIN_ALLOW_ALL` - let web pages from *any* origin
-          read API responses in a visitor's browser. InvenTree's shipped
-          `config.yaml` enables this, which raises warning INVE-W16, so the
-          module forces it off unless you ask for it. Only turn it on for
-          development or a deliberately public, credential-free API.
+        description = ''See `INVENTREE_CORS_ORIGIN_ALLOW_ALL`.  Normally false, except in certain development situations.
         '';
       };
 
@@ -335,15 +293,7 @@ in
         type = lib.types.listOf lib.types.str;
         default = [ ];
         example = [ "https://dashboard.example.com" ];
-        description = ''
-          `INVENTREE_CORS_ORIGIN_WHITELIST` - extra origins (scheme and host,
-          optional port, no path or trailing slash) whose browser scripts may
-          read API responses. Same-origin access, i.e. the web UI itself, never
-          needs an entry, and from 1.x InvenTree adds
-          {option}`services.inventree.siteUrl` automatically. Only useful for
-          a second hostname or a separate web app that calls the API from
-          the browser. Ignored while {option}`services.inventree.cors.allowAll`
-          is true.
+        description = ''See `INVENTREE_CORS_ORIGIN_WHITELIST`.  If your site has a second URL, you may need to add it here.
         '';
       };
     };
@@ -351,64 +301,32 @@ in
     port = lib.mkOption {
       type = lib.types.port;
       default = 1337;
-      description = ''
-        Plain-HTTP port the InvenTree stack's proxy publishes.
-        0.11-0.13: the NixOS Caddy (or, with
-        {option}`services.inventree.caddy.enable` = false, your own
-        proxy) reverse-proxies to `http://localhost:<port>`. 0.14 onward: the
-        bundled Caddy takes :80 and :443 directly, and this only applies when
-        `caddy.enable` = false - it becomes the HTTP port (`INVENTREE_WEB_PORT`
-        up to 0.17, `INVENTREE_HTTP_PORT` from 1.0).
-      '';
+      description = ''InvenTree internal HTTP port.  Normally claimed by the reverse proxy.  Only needed with a custom reverse proxy.'';
     };
 
     dataDir = lib.mkOption {
       type = lib.types.str;
       default = "/srv/inventree/data";
-      description = ''
-        **External** host directory holding InvenTree's single data volume (the
-        postgres cluster, media, static files, Django secret key). On a bare
-        host this is used directly as `INVENTREE_EXT_VOLUME`; inside a
-        `service-container` the module bind-mounts it onto a fixed in-container
-        path automatically (no `bindMounts` entry needed). Switching
-        {option}`services.inventree.version` migrates this database in
-        place, so keep it stable across upgrades.
-      '';
+      description = ''Inventree data directory on the target host.'';
     };
 
     composeProjectName = lib.mkOption {
       type = lib.types.str;
       default = cfg.hostname;
       defaultText = lib.literalExpression "config.services.inventree.hostname";
-      description = ''
-        `COMPOSE_PROJECT_NAME` for the stack. Only a label - but it names the
-        docker resources, so changing it on a running instance orphans the old
-        containers. Pin it if you rename the instance.
-      '';
+      description = ''`COMPOSE_PROJECT_NAME`.  Normally the hostname.  Do not change this unless you know what you're doing.'';
     };
 
     tailscaleSocket = lib.mkOption {
       type = lib.types.str;
       default = "/run/tailscale/tailscaled.sock";
-      description = ''
-        Path to the `tailscaled` control socket, bind-mounted into the bundled
-        Caddy (0.14+ with `caddy.enable`) so it can fetch the `*.ts.net`
-        certificate for {option}`services.inventree.siteUrl`. It must be
-        reachable in this instance's filesystem - the NixOS default when
-        Tailscale runs here, or a path a container wrapper bind-mounts in.
-      '';
+      description = ''For Caddy installations with Tailscale, this is the Tailscale socket file which Caddy should use to set up TLS.'';
     };
 
     enableGoogleLogin = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = ''
-        Load django-allauth's Google provider. The OAuth client ID/secret are
-        *not* configured here - they live in the database as a SocialApp row
-        (Django Admin -> Sites -> Social Applications), which comes along with any
-        database restore from an instance that already had Google login set up.
-        This flag only controls whether InvenTree loads the provider app at all.
-      '';
+      description = ''Whether to enable Google logins.'';
     };
 
     plugins = lib.mkOption {
@@ -422,15 +340,9 @@ in
               else (pkgs.inventreePlugins or { }).${name} or null;
             defaultText = lib.literalExpression "pkgs.inventreePlugins.<name> if the in-tree collection has one and `path` is unset, else null";
             example = lib.literalExpression "pkgs.inventreePlugins.ipn-generator";
-            description = ''
-              The plugin, as a derivation. Defaults to the in-tree plugin
-              (`pkgs.inventreePlugins`) named like the attribute, so
-              `plugins.ipn-generator = { };` is enough for those.
-              `$out/<module>` holds its Python
-              package (or a single `<module>.py`) and
-              `passthru.inventreePlugin.module` names it. Build one with
-              inventree-nix's `lib.mkPlugin`, or by hand. Exactly one of
-              `package` and `path` must be set.
+            description = ''inventree-flake plugin derivation.  Use this option to install a plugin from a flake.
+
+              Only one of `path` and `package` may be set.
             '';
           };
 
@@ -439,13 +351,10 @@ in
             default = null;
             example = "/home/me/src/my-plugin/my_plugin";
             description = ''
-              A plugin directory on the host, for development. Absolute
-              *string* (not a Nix path literal, which would be copied to the
-              store). It is symlinked into the plugin directory under its
-              basename and bind-mounted read-only (at
-              `/opt/inventree-dev-plugins/<basename>` in the containers), so
-              edits are live after a restart. Exactly one of `package` and
-              `path` must be set.
+              Directory containing a plugin.  This must be on the taregt host, as it will be 
+              bind-mounted to the Docker.  It does not have to be a flake.
+            
+              Only one of `path` and `package` may be set.
             '';
           };
 
@@ -457,23 +366,14 @@ in
               else null;
             defaultText = lib.literalExpression "package.passthru.inventreePlugin.slug (null for a path)";
             example = "ipngen";
-            description = ''
-              The plugin's InvenTree **slug** (its `SLUG`, not a PyPI name),
-              used to force-activate it. Taken from the package when it
-              declares one; a `path` entry that is `active` must set it.
-            '';
+            description = ''A short name used for plugin activation.  Required for `path` plugins.'';
           };
 
           active = lib.mkOption {
             type = lib.types.bool;
             default = true;
-            description = ''
-              Force the plugin active on every start: its slug is added to
-              `INVENTREE_PLUGINS_MANDATORY`, so it cannot be disabled from the
-              UI. Set `false` to leave activation to the admin UI (Settings →
-              Plugins). InvenTree **1.x only** - earlier releases ignore the
-              setting (the module warns) and need the plugins activated by hand
-              in the admin UI.
+            description = ''Activate the plugin.  There will not be an option to
+              deactivate it in the UI.  Works only for versions 1.0 and later.
             '';
           };
         };
@@ -544,7 +444,7 @@ in
         (`ENABLE_PLUGINS_APP`) needs to be active before `invoke migrate` runs,
         so its first install may take a second `systemctl restart`.
 
-        Plugins built with `lib.mkPlugin` can declare the settings they need
+        Plugins built with `lib.inventreePlugin` can declare the settings they need
         (`pluginConfigs` there); those are merged in automatically, so you only
         set what a plugin does not already require. Settings that several
         sources agree on merge silently (`ENABLE_PLUGINS_URL = true` and
@@ -565,36 +465,29 @@ in
         type = lib.types.str;
         default = "inventree";
         description = ''
-          PostgreSQL role the stack connects as (`INVENTREE_DB_USER`). The
-          bundled postgres container creates this role on first run; for an
-          existing database it must match the role that already owns it.
+          PostgreSQL role (`INVENTREE_DB_USER`).
         '';
       };
       passwordFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
         description = ''
-          Path to a file containing the PostgreSQL password, read at service
-          start - never copied into the store. Required when the module is
-          enabled. In a container, bind-mount the host secret at this same path.
+          Path to a file containing the PostgreSQL password.
         '';
       };
       image = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         example = "postgres:13";
-        description = ''
-          Override the PostgreSQL container image. `null` uses whatever the
-          selected version's compose file ships: `postgres:13` for 0.11-0.17,
-          `postgres:17` for 1.0+.
+        description = ''Postgres container image version.  In general, changing 
+          versions requires the database files to be upgraded.
 
-          Postgres major versions store their on-disk data incompatibly, so this
-          cannot simply jump: the 0.11-0.17 line runs on `postgres:13`, and
-          1.0.x / 1.1.x still run against a 13 cluster if you pin
-          `"postgres:13"` here. Moving to `postgres:17` (required by InvenTree
-          1.2+) means a dump/restore into a fresh cluster - do that while on
-          1.1.x following <https://inventree.org/blog/2026/02/12/db-update>, then
-          set this back to `null`.
+          InvenTree versions 0.11..0.17 use postgres:13; versions 1.0.x and 1.1.x 
+          use either postgres:13 or postgres:17; and from 1.2.x to present 
+          versions, only postgres:17 is used.
+          
+          The appropriate image is set by default.  Unless you are
+          executing a specific upgrade action, you should normally leave this unset.
         '';
       };
     };
@@ -602,14 +495,10 @@ in
     caddy.enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = ''
-        Have the stack terminate HTTPS for {option}`...virtualHost` itself. For
-        0.11-0.13 this runs a NixOS `services.caddy` in front of the stack's
-        nginx; for 0.14 onward the stack already ships Caddy, so this just serves
-        {option}`...siteUrl` on :443 with a Tailscale certificate (needs a
-        `tailscaled` reachable at {option}`...tailscaleSocket` that permits
-        {option}`services.inventree.certUid`). Disable to put your own
-        reverse proxy in front, pointing at `http://localhost:<port>`.
+      description = ''Use the Caddy reverse proxy for HTTPS service.
+      
+        From 0.14, InvenTree Docker uses its own Caddy, but this option can  
+        disable it if desired.
       '';
     };
 
@@ -620,13 +509,7 @@ in
         if !cfg.caddy.enable then null
         else if caddyGen then "root"
         else "caddy";
-      description = ''
-        (read-only) Which uid needs permission to fetch the `*.ts.net`
-        certificate for this instance's front door: `"root"` for the 0.14+
-        bundled Caddy, `"caddy"` for the 0.11-0.13 NixOS Caddy, `null` when
-        `caddy.enable` is false. Feed this to your container wrapper's
-        Tailscale `permitCertUid` (`TS_PERMIT_CERT_UID`).
-      '';
+      description = ''Informational option used with Tailscale for certificate management.'';
     };
 
     smtp = lib.mkOption {
@@ -840,17 +723,12 @@ in
     };
   }
 
-    # Inside a service-container: hand the wrapper the external directories to
-    # bind-mount onto our fixed in-container paths, so no `bindMounts` clause is
-    # needed at the call site. (The data volume; the secret files, so
-    # preStart's `cat` works.) `optionalAttrs`, not `mkIf`: on a bare host the
-    # `serviceContainer` option isn't declared, so the attr must not appear at
-    # all.
+    # Make adjustments for running inside a ctrnet instance.
     (lib.optionalAttrs containerised {
       # The stack is Docker; have the wrapper set up docker-in-nspawn for us.
-      serviceContainer.docker.enable = true;
+      ctrnet.docker.enable = true;
 
-      serviceContainer.bindMounts = {
+      ctrnet.bindMounts = {
         ${paths.extVolume} = { hostPath = cfg.dataDir; isReadOnly = false; };
         ${paths.dbPassword} = { hostPath = toString cfg.database.passwordFile; isReadOnly = true; };
       } // lib.optionalAttrs (cfg.smtp.passwordFile != null) {

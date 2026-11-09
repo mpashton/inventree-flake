@@ -1,10 +1,9 @@
 {
-  description = "InvenTree (0.11 - 1.6) upstream docker-compose stack as a NixOS module";
+  description = "InvenTree inventory management system";
 
   inputs = {
-    # Consumers point their own nixpkgs at the module via
-    # `inputs.inventree.inputs.nixpkgs.follows`. This pin is only used by checks.
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # nxpkgs is used by checks
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-parts.url = "github:hercules-ci/flake-parts";
   };
 
@@ -20,16 +19,14 @@
       };
       flake.nixosModules.default = self.nixosModules.inventree;
 
-      # `lib.mkPlugin pkgs { pname; version; src; module; ... }` - see
-      # lib/mk-plugin.nix for the plugin derivation contract.
-      flake.lib.mkPlugin = import ./lib/mk-plugin.nix;
+      flake.lib.inventreePlugin = import ./inventree-plugin.nix;
 
       # The in-tree plugin collection (plugins/<name>/default.nix).
       flake.overlays.default = final: _prev: {
         inventreePlugins = import ./plugins {
           inherit (final) lib;
           pkgs = final;
-          mkPlugin = self.lib.mkPlugin final;
+          inventreePlugin = self.lib.inventreePlugin final;
         };
       };
 
@@ -37,9 +34,11 @@
         let
           inventreePlugins = import ./plugins {
             inherit lib pkgs;
-            mkPlugin = self.lib.mkPlugin pkgs;
+            inventreePlugin = self.lib.inventreePlugin pkgs;
           };
 
+          # Functions for testing
+          #
           # Native target: force the whole toplevel (compose / proxy rendering,
           # the systemd unit, assertions). Foreign target (Graviton etc.): force
           # option-processing + assertions only - proves the module evaluates
@@ -76,8 +75,8 @@
               echo ${lib.escapeShellArg probe} > "$out"
             '';
 
-          # A trivial plugin built with mkPlugin, standing in for a real one.
-          fixturePlugin = self.lib.mkPlugin pkgs {
+          # Testing: A trivial plugin built with inventreePlugin, standing in for a real one.
+          fixturePlugin = self.lib.inventreePlugin pkgs {
             pname = "inventree-fixture";
             version = "0.0.1";
             module = "fixture_plugin";
@@ -108,6 +107,7 @@
         {
           legacyPackages.inventreePlugins = inventreePlugins;
 
+          # Tests
           checks = lib.listToAttrs (lib.concatMap
             (target: lib.mapAttrsToList
               (name: version: { name = "${name}-${target}"; value = evalOn target version { }; })
@@ -234,7 +234,7 @@
                 # pluginConfigs: a second plugin that wants the opposite of the
                 # fixture's ENABLE_PLUGINS_URL (spelled with the INVENTREE_ prefix
                 # and as a string, to prove keys/values are normalised)
-                contrary = self.lib.mkPlugin pkgs {
+                contrary = self.lib.inventreePlugin pkgs {
                   pname = "inventree-contrary"; version = "0.0.1";
                   module = "contrary"; slug = "contrary";
                   src = pkgs.runCommand "contrary-src" { } "mkdir -p $out/contrary; touch $out/contrary/__init__.py";

@@ -6,8 +6,8 @@
 # declared below and merged into `services.inventree.pluginConfigs` for you.
 # It is force-active by default (`active = true`, 1.x); set `active = false` to
 # leave activation to the admin UI.
-{ mkPlugin, fetchFromGitHub, lib }:
-mkPlugin {
+{ inventreePlugin, fetchFromGitHub, lib }:
+inventreePlugin {
   pname = "inventree-ipn-generator";
   version = "0.1.2";
   src = fetchFromGitHub {

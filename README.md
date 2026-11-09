@@ -1,28 +1,121 @@
 # inventree-flake
 
-This is a flake for [InvenTree](https://inventree.org/) using the official upstream Docker Compose stack.
+inventree-flake is a Nix flake for [InvenTree](https://inventree.org/) using the official upstream Docker Compose stack. Major features include:
 
-A unique feature of this flake is that it can install any of a selection of versions of InvenTree. This enables straightforward and well-controlled upgrades. The latest patchlevel of each minor version is included, and in most cases, versions not in the list are easily added.
+- Select from a list of available InvenTree versions, enabling easy version upgrades
+- Easily support new InvenTree releases
+- Install plugins from Nix
+- Directly uses the official Docker Compose stack
+- Automatically configures Caddy (optional) and Postgres databases
+
+A unique feature of this flake is that it can install any of a selection of versions of InvenTree. This enables straightforward and well-controlled upgrades. The latest patchlevel of each minor version is included, and in most cases, versions not in the list are easily added. It is also straightforward to add upstream releases.
 
 Plugins are fully supported, and configured from Nix.  The major Inventree plugins are supported directly in this flake.  Installing plugins from source is also supported.
 
-Using this flake, it is straightforward to run multiple instances of InvenTree on the same server, with different versions if desired. (See `ctrnet` for a flake which can help with this.)
+This flake uses the `services.inventree` option set, so it cannot be installed at the same time as the Nixpkgs Inventree package. To run both on one system, put at least one of them in a container (which you would need to do anyway).
 
 ## Plugins
 
-Plugins can be installed by listing them in `services.inventree.plugins.packages`. This flake includes a set of the most commonly used Inventree plugins, in the `plugins/` directory.
+Plugins can be installed from one of the following sources.
 
-You can also install a plugin by pointing to its directory using the `path` parameter.
+- Built-in plugins are (currently) configured within InvenTree.
+- The `plugins/` directory includes a set of commonly used external Inventree plugins.  These can be installed by listing them in `services.inventree.plugins`.  `inventree-flake/plugins/ipn-generator` would be installed as follows:
+
+```
+    services.inventree.plugins = {
+        ipn-generator = {};
+    };
+```
+
+- Plugins can be packaged externally as flakes; see below.
+- Plugins can be installed from a local directory.  Plugins are copied to the target, so this works with remote servers as well.
+
+### Plugin flakes
+
+Plugins can be installed from a flake source:
+
+```nix
+{
+
+  inputs = {
+    some-plugin.url = "github:yoyodyne/some-plugin";
+  };
+
+  outputs = inputs@{ self, ... }: {
+    # ...
+
+    services.inventree.plugins = {
+        ipn-generator = {
+          package = inputs.some-plugin.packages.${system}.default;
+        };
+    };
+  };
+}
+```
+
+To make the plugin a flake, a flake.nix must be added.  For inventree-ipn-generator, here is an example, which also sets up the metadata using the pyproject.toml file:
+
+```nix
+{
+  description = "InvenTree IPN generator plugin, packaged for inventree-flake";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    inventree.url = "github:mpashton/inventree-flake";
+    inventree.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { self, nixpkgs, inventree }:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" ];
+      forAll = f: nixpkgs.lib.genAttrs systems (s: f s nixpkgs.legacyPackages.${s});
+      project = (builtins.fromTOML (builtins.readFile ./pyproject.toml)).project;
+    in {
+      packages = forAll (system: pkgs: {
+        default = self.packages.${system}.inventree-ipn-generator;
+        inventree-ipn-generator = inventree.lib.inventreePlugin pkgs {
+          pname = "inventree-ipn-generator";
+          inherit (project) version;      # single source of truth: pyproject.toml
+          src = self;
+          module = "ipn_generator";
+          slug = "ipngen";
+          pluginConfigs.ENABLE_PLUGINS_EVENTS = true;
+          meta = { description = project.description; homepage = project.urls.Homepage; license = nixpkgs.lib.licenses.mit; };
+        };
+      });
+    };
+}
+```
+
+### Bare plugins
+
+A plugin directory can be given directly to the Docker instance using the `path` option.  This can be useful for plugin development, or for quickly installing plugins that are not specifically packaged for inventree-flake.
+
+Note that the directory is on the target host where InvenTree is running.  The directory is *not* copied from the build host to the target.
+
+```nix
+    services.inventree.plugins = {
+        ipn-generator = {
+          path = "/home/joe/ipn-generator-dev";
+          slug = "ipngen";
+          pluginConfigs.ENABLE_PLUGINS_EVENTS = true;
+        };
+    };
+```
+
+Note the use of `pluginConfigs`, which must be set here.  Different plugins may require different options to be turned on; some may not require any.
+
 
 ## Configuration
 
-This flake uses the `services.inventree` option set, so it cannot be installed at the same time as the Nixpkgs Inventree package. To run both on one system, put at least one of them in a container (which you would need to do anyway).
 
 ## Disk space
 
+For a standalone server installation, at least 8GiB is recommended for root, and 4GiB for data (typically `srv/`).
+
 On space-constrained hosts, it may be necessary to clean up an installation from time to time.
 
-Currently, this plugin does not delete old Docker images on upgrade. Use `docker images` to find unused Docker images, and `docker rm <imageid>` to delete them.
+Currently, this plugin does not delete old Docker images on upgrade. Use `docker images` to find unused Docker images, and `docker image rm <imageid>` to delete them.
 
 `nixos-collect-garbage -d` can sometimes free up significant disk space.
 
@@ -186,7 +279,7 @@ passthru.inventreePlugin.module = "<module>";
 ```
 
 That is the whole contract, so a plugin flake need not depend on this one.
-`inventree.lib.mkPlugin pkgs { pname; version; src; module; srcRoot ? module;
+`inventree.lib.inventreePlugin pkgs { pname; version; src; module; srcRoot ? module;
 slug; inventreeVersions ? null; pluginConfigs ? { }; }` is optional sugar for it
 (`srcRoot` is the path inside the source to install as `module`, e.g.
 `"src/my_plugin"`; `slug` is the plugin's InvenTree `SLUG`, used to activate it;
@@ -205,7 +298,7 @@ A plugin flake exports the package plus a module that adds it:
 
 ```nix
 outputs = { self, nixpkgs, inventree }: {
-  packages.x86_64-linux.default = inventree.lib.mkPlugin nixpkgs.legacyPackages.x86_64-linux {
+  packages.x86_64-linux.default = inventree.lib.inventreePlugin nixpkgs.legacyPackages.x86_64-linux {
     pname = "inventree-foo"; version = "1.2.3"; src = ./.; module = "foo";
   };
   nixosModules.default = { pkgs, ... }: {
@@ -229,8 +322,8 @@ applied by the module) and `legacyPackages.<system>.inventreePlugins.<name>`:
 
 ```nix
 # plugins/bulk-action/default.nix
-{ mkPlugin, fetchFromGitHub }:
-mkPlugin {
+{ inventreePlugin, fetchFromGitHub }:
+inventreePlugin {
   pname = "inventree-bulk-action"; version = "1.2.3"; module = "bulk_action";
   src = fetchFromGitHub { owner = "..."; repo = "..."; rev = "v1.2.3"; hash = "sha256-..."; };
 }

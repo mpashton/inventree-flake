@@ -23,7 +23,7 @@
 #                         The module merges them into its own and flags conflicts.
 #   meta                  usual derivation meta
 #
-# Usage:  mkPlugin pkgs { pname = "inventree-foo"; version = "1.2.3"; src = ...; module = "foo"; slug = "foo"; }
+# Usage:  inventreePlugin pkgs { pname = "inventree-foo"; version = "1.2.3"; src = ...; module = "foo"; slug = "foo"; }
 pkgs:
 { pname
 , version
@@ -37,7 +37,7 @@ pkgs:
 }:
 assert pkgs.lib.assertMsg
   (pkgs.lib.all (v: pkgs.lib.isString v || pkgs.lib.isBool v) (pkgs.lib.attrValues pluginConfigs))
-  "mkPlugin ${pname}: pluginConfigs values must be strings or booleans";
+  "inventreePlugin ${pname}: pluginConfigs values must be strings or booleans";
 pkgs.stdenvNoCC.mkDerivation {
   inherit pname version src meta;
 
