@@ -59,10 +59,10 @@ let
   # The 1.x series (a rewrite) keeps the caddy topology but renames some .env
   # vars and bumps postgres to 17 - see `isV1` below.
   versions = lib.mapAttrs
-    (name: _: import (./. + "/${name}"))
+    (name: _: import (./. + "/version/${name}"))
     (lib.filterAttrs
       (name: t: t == "directory" && builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+" name != null)
-      (builtins.readDir ./.));
+      (builtins.readDir ./version));
 
   selected = versions.${cfg.version};
   dockerComposeYml = selected.dockerComposeYml;
