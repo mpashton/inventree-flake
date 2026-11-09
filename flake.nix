@@ -141,6 +141,38 @@
                 touch $out
               '';
 
+            # CORS: off by default on every generation (INVE-W16), whitelist only
+            # emitted when non-empty, comma-joined; allowAll can be switched on.
+            "cors-env-${system}" =
+              let
+                envOf = version: extra:
+                  let
+                    sys = mkSys system version extra;
+                    preStart = sys.config.systemd.services.inventree.preStart;
+                  in
+                  pkgs.writeText "prestart-${version}.sh" preStart;
+                legacy = envOf "0.13.6" { };
+                latest = envOf versions.eval-v1-latest { };
+                wl = envOf versions.eval-v1-latest {
+                  cors.whitelist = [ "https://a.example" "https://b.example:8443" ];
+                };
+                open = envOf versions.eval-v1-latest { cors.allowAll = true; };
+                envFile = f: ''$(grep -o '/nix/store/[a-z0-9]*-inventree.env' ${f} | head -1)'';
+              in
+              pkgs.runCommand "inventree-cors-env-check" { } ''
+                for f in ${legacy} ${latest}; do
+                  env=${envFile "$f"}
+                  grep -qx 'INVENTREE_CORS_ORIGIN_ALLOW_ALL=False' "$env"
+                  ! grep -q 'INVENTREE_CORS_ORIGIN_WHITELIST' "$env"
+                done
+                env=${envFile wl}
+                grep -qx 'INVENTREE_CORS_ORIGIN_ALLOW_ALL=False' "$env"
+                grep -qx 'INVENTREE_CORS_ORIGIN_WHITELIST=https://a.example,https://b.example:8443' "$env"
+                env=${envFile open}
+                grep -qx 'INVENTREE_CORS_ORIGIN_ALLOW_ALL=True' "$env"
+                touch $out
+              '';
+
             # Builds the plugin directory and checks its shape, the .env line
             # and the compose override mounts.
             "plugin-dir-${system}" =

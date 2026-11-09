@@ -18,10 +18,17 @@ You can also install a plugin by pointing to its directory using the `path` para
 
 This flake uses the `services.inventree` option set, so it cannot be installed at the same time as the Nixpkgs Inventree package. To run both on one system, put at least one of them in a container (which you would need to do anyway).
 
+## Disk space
+
+On space-constrained hosts, it may be necessary to clean up an installation from time to time.
+
+Currently, this plugin does not delete old Docker images on upgrade. Use `docker images` to find unused Docker images, and `docker rm <imageid>` to delete them.
+
+`nixos-collect-garbage -d` can sometimes free up significant disk space.
+
 ## todo
 
 - more text config, less gui config
-- generate config.yaml
 - automatically set "Check plugins on startup"
 - packaged plugins for the external plugins in use (`plugins/`)
 
@@ -287,6 +294,16 @@ running stack down by hand first (`docker rm -f $(docker ps -aq)` in the
 container/host - all state is in `dataDir`). From **0.16** on, `siteUrl` (→
 `INVENTREE_SITE_URL`) must be right or login fails with a CSRF error - it
 defaults to `https://<virtualHost>`, so make `virtualHost` the real name.
+
+### CORS
+
+InvenTree's shipped `config.yaml` allows API reads from every origin, which
+raises warning INVE-W16. The module overrides that: `cors.allowAll` defaults to
+`false` (`INVENTREE_CORS_ORIGIN_ALLOW_ALL`), on every supported release. Same-origin
+use - the web UI itself - needs no CORS at all. Add `cors.whitelist = [ "https://other.example" ]`
+(`INVENTREE_CORS_ORIGIN_WHITELIST`) only for another hostname or a separate web app that calls
+the API from browser JavaScript. The Caddy `Access-Control-Allow-Origin *` on `/static` and
+`/media` is upstream's and is unaffected.
 
 ### The 0.17 -> 1.0 step and the PostgreSQL wall
 

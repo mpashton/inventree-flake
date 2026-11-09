@@ -214,6 +214,9 @@ let
     INVENTREE_PLUGINS_ENABLED=${if cfg.enablePlugins then "True" else "False"}
     INVENTREE_TAG=${cfg.version}
     COMPOSE_PROJECT_NAME=${cfg.composeProjectName}
+    INVENTREE_CORS_ORIGIN_ALLOW_ALL=${if cfg.cors.allowAll then "True" else "False"}
+  '' + lib.optionalString (cfg.cors.whitelist != [ ]) ''
+    INVENTREE_CORS_ORIGIN_WHITELIST=${lib.concatStringsSep "," cfg.cors.whitelist}
   '' + lib.optionalString (!isV1) ''
     INVENTREE_WEB_PORT=${toString webPort}
   '' + lib.optionalString caddyGen ''
@@ -313,6 +316,36 @@ in
         origins from it - mandatory from 0.16, the server refuses to start
         without it. Ignored by the 0.11-0.13 (nginx) generation.
       '';
+    };
+
+    cors = {
+      allowAll = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          `INVENTREE_CORS_ORIGIN_ALLOW_ALL` - let web pages from *any* origin
+          read API responses in a visitor's browser. InvenTree's shipped
+          `config.yaml` enables this, which raises warning INVE-W16, so the
+          module forces it off unless you ask for it. Only turn it on for
+          development or a deliberately public, credential-free API.
+        '';
+      };
+
+      whitelist = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "https://dashboard.example.com" ];
+        description = ''
+          `INVENTREE_CORS_ORIGIN_WHITELIST` - extra origins (scheme and host,
+          optional port, no path or trailing slash) whose browser scripts may
+          read API responses. Same-origin access, i.e. the web UI itself, never
+          needs an entry, and from 1.x InvenTree adds
+          {option}`services.inventree.siteUrl` automatically. Only useful for
+          a second hostname or a separate web app that calls the API from
+          the browser. Ignored while {option}`services.inventree.cors.allowAll`
+          is true.
+        '';
+      };
     };
 
     port = lib.mkOption {
@@ -649,6 +682,10 @@ in
 
   config = lib.mkIf cfg.enable (lib.mkMerge [ {
     assertions = [
+      {
+        assertion = lib.all (o: builtins.match "https?://[^/]+" o != null) cfg.cors.whitelist;
+        message = "services.inventree.cors.whitelist entries must look like `https://host[:port]` (scheme required, no path or trailing slash); got: ${builtins.toJSON cfg.cors.whitelist}.";
+      }
       {
         assertion = cfg.database.passwordFile != null;
         message = "services.inventree.database.passwordFile must be set when services.inventree.enable is true.";
