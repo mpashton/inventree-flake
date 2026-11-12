@@ -136,6 +136,16 @@ let
     ([{ name = "__init__.py"; path = pluginDirInit; }]
       ++ map (e: { inherit (e) name; path = e.target; }) pluginEntries);
 
+  # Plugins can only be installed from Nix.  Plugin install UI is disabled.
+  pipPluginFile = pkgs.writeText "plugins.txt" ''
+    # Managed by NixOS (services.inventree) and overwritten on every start.
+    # pip-installed plugins are disabled; declare plugins in services.inventree.plugins.
+  '';
+  pipPluginFileInContainer = "/home/inventree/data/plugins.txt";
+  # Settings the Nix-only plugin policy depends on; pluginConfigs may not set them.
+  reservedPluginConfigs = [ "INVENTREE_PLUGIN_NOINSTALL" "INVENTREE_PLUGIN_FILE" ];
+  reservedPluginConfigsSet = lib.filter (k: effectivePluginConfigs ? ${k}) reservedPluginConfigs;
+
   # Read-only bind mounts so the symlinks resolve inside the containers: store
   # paths at identical paths, dev paths at `devMountRoot`.
   # `create_host_path: false`: a missing dev path must fail the start, not be
@@ -205,6 +215,8 @@ let
     INVENTREE_DB_USER=${cfg.database.user}
     INVENTREE_GUNICORN_TIMEOUT=30
     INVENTREE_PLUGINS_ENABLED=${if cfg.enablePlugins then "True" else "False"}
+    INVENTREE_PLUGIN_NOINSTALL=True
+    INVENTREE_PLUGIN_FILE=${pipPluginFileInContainer}
     INVENTREE_TAG=${cfg.version}
     COMPOSE_PROJECT_NAME=${cfg.composeProjectName}
     INVENTREE_CORS_ORIGIN_ALLOW_ALL=${if cfg.cors.allowAll then "True" else "False"}
@@ -391,8 +403,14 @@ in
         InvenTree's custom plugin directory (`INVENTREE_PLUGIN_DIR`). That
         directory is a Nix store `linkFarm` with one symlink per entry; the
         link targets are bind-mounted read-only, at the same paths, into the
-        server and worker containers. Nothing is installed with pip and
-        nothing is written to {option}`services.inventree.dataDir`.
+        server and worker containers. Nothing is installed with pip.
+
+        These are the *only* plugins the instance loads: pip-installed plugins
+        are not supported. The module sets `INVENTREE_PLUGIN_NOINSTALL` (no
+        installs from the admin UI) and overwrites `plugins.txt` in
+        {option}`services.inventree.dataDir` with an empty, comment-only file on
+        every start, so InvenTree's startup install has nothing to install.
+        Package a PyPI plugin with `lib.inventreePlugin` instead.
 
         Being an attribute set, one module can add a plugin and another can
         adjust it - plugin flakes typically ship a `nixosModules.default` that
@@ -610,6 +628,10 @@ in
         assertion = lib.allUnique (map (e: e.name) pluginEntries);
         message = "services.inventree.plugins: two entries install under the same name (${lib.concatStringsSep ", " (map (e: e.name) pluginEntries)}); each plugin module / dev directory name must be unique.";
       }
+      {
+        assertion = reservedPluginConfigsSet == [ ];
+        message = "services.inventree: ${lib.concatStringsSep ", " reservedPluginConfigsSet} cannot be set through pluginConfigs (or a plugin's pluginConfigs) - the module sets them so that plugins come only from services.inventree.plugins; pip-installed plugins are not supported.";
+      }
     ];
 
     warnings =
@@ -672,9 +694,12 @@ in
       #
       # Plugins need no install step: `plugins` is a store `linkFarm`
       # that `INVENTREE_PLUGIN_DIR` points at, bind-mounted in via the compose
-      # override, so they are already in place when `migrate` runs.
+      # override, so they are already in place when `migrate` runs. pip plugins
+      # are disabled: plugins.txt on the data volume is reset to a comment-only
+      # file (see `pipPluginFile`).
       preStart = ''
         set -o errexit
+        install -m 644 ${pipPluginFile} ${paths.extVolume}/plugins.txt
         install -m 600 ${envTemplate} ${inventree.composeDir}/.env
         echo "INVENTREE_DB_PASSWORD=$(cat ${paths.dbPassword})" \
           >> ${inventree.composeDir}/.env

@@ -214,6 +214,35 @@
                 touch $out
               '';
 
+            # Nix-only plugins: with or without plugins, on old and new
+            # generations, the env disables pip installs and points at the data
+            # volume's plugins.txt, which preStart resets to a comment-only file.
+            "plugin-nix-only-${system}" =
+              let
+                prestartOf = version: extra:
+                  pkgs.writeText "prestart-${version}.sh"
+                    (mkSys system version extra).config.systemd.services.inventree.preStart;
+                cases = [
+                  (prestartOf versions.eval-v1-latest { })
+                  (prestartOf versions.eval-v1-latest pluginFixtures)
+                  (prestartOf "0.13.6" { })
+                ];
+              in
+              pkgs.runCommand "inventree-plugin-nix-only-check" { } ''
+                for f in ${lib.concatStringsSep " " (map toString cases)}; do
+                  env=$(grep -o '/nix/store/[a-z0-9]*-inventree.env' "$f" | head -1)
+                  test -n "$env"
+                  grep -qx 'INVENTREE_PLUGIN_NOINSTALL=True' "$env"
+                  grep -qx 'INVENTREE_PLUGIN_FILE=/home/inventree/data/plugins.txt' "$env"
+                  test "$(grep -c '^INVENTREE_PLUGIN_NOINSTALL=' "$env")" = 1
+                  line=$(grep -E '^install -m 644 /nix/store/[a-z0-9]*-plugins.txt /srv/inventree/data/plugins.txt$' "$f")
+                  txt=$(echo "$line" | grep -o '/nix/store/[a-z0-9]*-plugins.txt')
+                  test -f "$txt"
+                  ! grep -v '^#' "$txt" | grep -q .
+                done
+                touch $out
+              '';
+
             # Misconfigured entries and conflicting settings fail an assertion
             # (not an evaluation error).
             "plugin-assertions-${system}" =
@@ -253,6 +282,9 @@
                   plugins.a.package = fixturePlugin;
                   pluginConfigs = { INVENTREE_ENABLE_PLUGINS_URL = "True"; ENABLE_PLUGINS_APP = true; };
                 };
+                # The Nix-only policy's own settings can't be overridden.
+                reenablePip = failedWith { pluginConfigs.PLUGIN_NOINSTALL = false; };
+                otherPluginFile = failedWith { pluginConfigs.INVENTREE_PLUGIN_FILE = "/tmp/p.txt"; };
                 msg = lib.concatStrings userVsPlugin;
               in
               assert lib.assertMsg (bothSet != [ ]) "package + path together must be rejected";
@@ -264,6 +296,8 @@
               assert lib.assertMsg (userVsPlugin != [ ]) "pluginConfigs contradicting a plugin must be rejected";
               assert lib.assertMsg (userVsPluginPrefixed != [ ]) "a prefixed key contradicting a plugin must be rejected";
               assert lib.assertMsg (agreeing == [ ]) "agreeing settings must merge silently: ${toString agreeing}";
+              assert lib.assertMsg (reenablePip != [ ]) "pluginConfigs must not re-enable pip installs";
+              assert lib.assertMsg (otherPluginFile != [ ]) "pluginConfigs must not move the plugins file";
               assert lib.assertMsg
                 (lib.hasInfix "INVENTREE_ENABLE_PLUGINS_URL" msg
                   && lib.hasInfix "plugin a" msg
